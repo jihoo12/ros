@@ -25,6 +25,8 @@ pub struct BootInfo {
     pub descriptor_version: u32,
 }
 
+mod memory;
+
 mod writer;
 use core::fmt::Write;
 
@@ -35,6 +37,18 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     let _ = writeln!(writer, "Hello World from Kernel!");
     let _ = writeln!(writer, "Resolution: {}x{}", boot_info.horizontal_resolution, boot_info.vertical_resolution);
     let _ = writeln!(writer, "Framebuffer: {:#x}", boot_info.framebuffer_base);
+
+    // Initialize Frame Allocator
+    let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
+
+    // Test Allocation
+    for i in 0..5 {
+        if let Some(frame) = allocator.allocate_frame() {
+            let _ = writeln!(writer, "Allocated Frame {}: {:#x}", i, frame);
+        } else {
+            let _ = writeln!(writer, "Failed to allocate frame {}", i);
+        }
+    }
 
     loop {}
 }
