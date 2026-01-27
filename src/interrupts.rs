@@ -1,3 +1,5 @@
+#![allow(bad_asm_style)]
+
 use core::arch::asm;
 use core::mem::size_of;
 use crate::writer::GLOBAL_WRITER;
@@ -111,6 +113,9 @@ pub unsafe fn init_idt() {
         set_gate(6, isr6, KERNEL_CODE_SEL, 0x8E);
         set_gate(7, isr7, KERNEL_CODE_SEL, 0x8E);
         set_gate(8, isr8, KERNEL_CODE_SEL, 0x8E);
+        
+        // Set IST Stack for Double Fault
+        IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8;
         set_gate(9, isr9, KERNEL_CODE_SEL, 0x8E);
         set_gate(10, isr10, KERNEL_CODE_SEL, 0x8E);
         set_gate(11, isr11, KERNEL_CODE_SEL, 0x8E);
@@ -187,6 +192,7 @@ pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
     
     // Safety: Global writer access is unsafe. We use addr_of_mut! to avoid creating an intermediate
     // reference that violates Rust 2024 static_mut_refs rules.
+    #[allow(static_mut_refs)]
     if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
         let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
         let _ = write!(writer, "INTERRUPT: {:#x} ", frame.int_no);

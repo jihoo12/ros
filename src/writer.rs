@@ -1,6 +1,7 @@
 use super::BootInfo;
 use core::fmt;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
+use core::fmt::Write;
 
 pub static mut GLOBAL_WRITER: Option<Writer> = None;
 
@@ -103,4 +104,24 @@ impl fmt::Write for Writer {
         }
         Ok(())
     }
+}
+
+pub fn _print(args: fmt::Arguments) {
+    unsafe {
+        #[allow(static_mut_refs)]
+        if let Some(writer) = GLOBAL_WRITER.as_mut() {
+            writer.write_fmt(args).unwrap();
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::writer::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }

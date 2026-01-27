@@ -28,68 +28,95 @@ pub struct BootInfo {
 mod gdt;
 mod memory;
 mod interrupts;
+mod syscall;
 
 mod writer;
 use core::fmt::Write;
 
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
-    let mut writer = writer::Writer::new(*boot_info);
-
-    let _ = writeln!(writer, "Hello World from Kernel!");
-    let _ = writeln!(writer, "Resolution: {}x{}", boot_info.horizontal_resolution, boot_info.vertical_resolution);
-    let _ = writeln!(writer, "Framebuffer: {:#x}", boot_info.framebuffer_base);
-
-    // Initialize Frame Allocator
-    let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
-
-    // Initialize Global Writer (for interrupts)
+    // Initialize Global Writer (for interrupts and syscalls)
     unsafe {
         writer::init_global_writer(*boot_info);
     }
+    
+    // We can now use println!
+    println!("Hello World from Kernel!");
+    println!("Resolution: {}x{}", boot_info.horizontal_resolution, boot_info.vertical_resolution);
+    println!("Framebuffer: {:#x}", boot_info.framebuffer_base);
+
+    // Initialize Frame Allocator
+    let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
 
     // Initialize GDT
     unsafe {
         gdt::init();
         interrupts::init_idt();
-        let _ = writeln!(writer, "GDT & IDT Initialized!");
+        println!("GDT & IDT Initialized!");
     }
 
     unsafe {
         memory::init_paging(boot_info, &mut allocator);
-        let _ = writeln!(writer, "Paging Initialized!");
+        println!("Paging Initialized!");
+    }
+    
+    // Initialize Syscalls
+    unsafe {
+        syscall::init();
+        println!("Syscalls Initialized!");
     }
 
-    // Test Allocation
-    for i in 0..5 {
-        if let Some(frame) = allocator.allocate_frame() {
-            let _ = writeln!(writer, "Allocated Frame {}: {:#x}", i, frame);
-        } else {
-            let _ = writeln!(writer, "Failed to allocate frame {}", i);
-        }
-    }
+    // Allocate User Stack
+    // We allocate 1 page for the user stack.
+    let user_stack_frame = allocator.allocate_frame().expect("Failed to allocate user stack");
+    // Identity mapped, so virtual = physical (checked in memory.rs)
+    // Stack grows down, so top is end of page.
+    let user_top_stack = user_stack_frame + 4096;
 
     // Switch to User Mode
     unsafe {
-        let _ = writeln!(writer, "Switching to User Mode...");
-        enter_usermode();
+        println!("Switching to User Mode...");
+        enter_usermode(user_top_stack);
     }
-    //it is unreachable code if it successfully switches to user mode
-    let _ = writeln!(writer, "failed to switch to user mode");
-    loop {}
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
+    let msg = "Hello from User Mode via Syscall!\n";
+    unsafe {
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+    }
+
     loop {
         // Spin in user mode
     }
 }
 
-pub unsafe fn enter_usermode() -> ! {
+#[inline(always)]
+unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> usize {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") id,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rax") ret,
+            lateout("rcx") _, 
+            lateout("r11") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret
+}
+
+pub unsafe fn enter_usermode(user_rsp: u64) -> ! {
     let user_cs: u64 = gdt::USER_CODE_SEL as u64; 
     let user_ds: u64 = gdt::USER_DATA_SEL as u64; 
-    let user_rsp = 0x100000u64; 
     
     use core::arch::asm;
     

@@ -7,6 +7,10 @@ pub const USER_DATA_SEL: u16 = 0x18 | 3;
 pub const USER_CODE_SEL: u16 = 0x20 | 3;
 pub const TSS_SEL: u16 = 0x28;
 
+pub const DOUBLE_FAULT_IST_INDEX: u16 = 1;
+
+static mut DOUBLE_FAULT_STACK: [u8; 4096] = [0; 4096];
+
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
 struct GdtEntry {
@@ -132,6 +136,11 @@ pub unsafe fn init() {
         // Clear TSS
         // Rust static initialization already zeroes it, but we set iomap_base
         TSS.iomap_base = size_of::<Tss>() as u16;
+
+        // Set up IST1 for Double Fault
+        let stack_ptr = core::ptr::addr_of_mut!(DOUBLE_FAULT_STACK) as *const u8;
+        let stack_top = stack_ptr.add(4096) as u64;
+        TSS.ist1 = stack_top;
 
         // Null descriptor
         set_gdt_entry(0, 0, 0, 0, 0);
