@@ -129,11 +129,31 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
     }
 
     // 5. Exit Boot Services
-    let status = unsafe { ((*boot_services).ExitBootServices)(_image_handle, map_key) };
+    let mut status = unsafe { ((*boot_services).ExitBootServices)(_image_handle, map_key) };
 
     if status != 0 {
-        // Retry logic might be needed here (memory map changed), but for simple case we return error.
-        return status;
+        // The memory map changed between GetMemoryMap and ExitBootServices.
+        // We must get the memory map again and retry once.
+        memory_map_size = memory_map_buffer.len();
+        status = unsafe {
+            ((*boot_services).GetMemoryMap)(
+                &mut memory_map_size,
+                memory_map_ptr,
+                &mut map_key,
+                &mut descriptor_size,
+                &mut descriptor_version
+            )
+        };
+
+        if status != 0 {
+            return status;
+        }
+
+        status = unsafe { ((*boot_services).ExitBootServices)(_image_handle, map_key) };
+
+        if status != 0 {
+            return status;
+        }
     }
 
     // 6. Jump to Kernel

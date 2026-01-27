@@ -102,6 +102,8 @@ pub struct EFI_MEMORY_DESCRIPTOR {
   pub Attribute: u64,
 }
 
+pub const EFI_CONVENTIONAL_MEMORY: u32 = 7;
+
 #[repr(C)]
 pub struct EFI_BOOT_SERVICES {
     pub Hdr: EFI_TABLE_HEADER,

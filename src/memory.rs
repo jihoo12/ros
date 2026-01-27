@@ -46,7 +46,7 @@ impl FrameAllocator {
             // We should use the constant if available, but for now we look for 7.
             // Reference: UEFI Spec 2.9, Section 7.2
             // EfiConventionalMemory = 7
-            if descriptor.Type == 7 {
+            if descriptor.Type == crate::uefi::EFI_CONVENTIONAL_MEMORY {
                 if self.current_page_offset < descriptor.NumberOfPages {
                     // Found a free page
                     let frame_address = descriptor.PhysicalStart + (self.current_page_offset * PAGE_SIZE);
