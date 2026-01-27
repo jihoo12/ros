@@ -41,6 +41,11 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Frame Allocator
     let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
 
+    unsafe {
+        memory::init_paging(boot_info, &mut allocator);
+        let _ = writeln!(writer, "Paging Initialized!");
+    }
+
     // Test Allocation
     for i in 0..5 {
         if let Some(frame) = allocator.allocate_frame() {

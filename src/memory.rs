@@ -1,71 +1,175 @@
 
-use crate::uefi::EFI_MEMORY_DESCRIPTOR;
+use crate::uefi::{EFI_MEMORY_DESCRIPTOR, EFI_CONVENTIONAL_MEMORY};
 use crate::BootInfo;
+use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
 
-/// A simple physical frame allocator that uses the UEFI memory map.
+pub const PAGE_PRESENT: u64 = 1 << 0;
+pub const PAGE_WRITABLE: u64 = 1 << 1;
+pub const PAGE_USER: u64 = 1 << 2;
+pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
+
+/// A simple physical frame allocator using UEFI memory map.
 pub struct FrameAllocator {
     memory_map: *const u8,
     memory_map_size: usize,
     pub descriptor_size: usize,
-    pub _descriptor_version: u32,
+    pub descriptor_version: u32,
     
-    // State to track next allocation
     current_descriptor_index: usize,
-    current_page_offset: u64, // Offset in pages within the current descriptor
+    current_page_offset: u64,
 }
 
 impl FrameAllocator {
-    /// Create a new FrameAllocator from the BootInfo.
-    /// 
     /// # Safety
-    /// The caller must ensure that the memory map passed in BootInfo is valid.
+    /// BootInfo memory map must be valid.
     pub unsafe fn new(boot_info: &BootInfo) -> Self {
         Self {
             memory_map: boot_info.memory_map,
             memory_map_size: boot_info.memory_map_size,
             descriptor_size: boot_info.descriptor_size,
-            _descriptor_version: boot_info.descriptor_version,
+            descriptor_version: boot_info.descriptor_version,
             current_descriptor_index: 0,
             current_page_offset: 0,
         }
     }
 
-    /// Allocate a single physical frame (4KB).
-    /// Returns the physical address of the frame if successful, or None if no memory is available.
     pub fn allocate_frame(&mut self) -> Option<u64> {
         let num_descriptors = self.memory_map_size / self.descriptor_size;
 
         while self.current_descriptor_index < num_descriptors {
             let offset = self.current_descriptor_index * self.descriptor_size;
+            // SAFE: We are within bounds derived from map size
             let descriptor_ptr = unsafe { self.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
             let descriptor = unsafe { &*descriptor_ptr };
 
-            // EFI_CONVENTIONAL_MEMORY is typically type 7.
-            // We should use the constant if available, but for now we look for 7.
-            // Reference: UEFI Spec 2.9, Section 7.2
-            // EfiConventionalMemory = 7
-            if descriptor.Type == crate::uefi::EFI_CONVENTIONAL_MEMORY {
+            if descriptor.Type == EFI_CONVENTIONAL_MEMORY {
                 if self.current_page_offset < descriptor.NumberOfPages {
-                    // Found a free page
                     let frame_address = descriptor.PhysicalStart + (self.current_page_offset * PAGE_SIZE);
-                    
-                    // Advance pointer for next time
                     self.current_page_offset += 1;
-
-                    // Ensure the frame is not null (unlikely for usable memory, but good sanity check)
                     if frame_address > 0 {
                         return Some(frame_address);
                     }
                 }
             }
 
-            // Move to next descriptor
             self.current_descriptor_index += 1;
             self.current_page_offset = 0;
         }
-
         None
     }
+}
+
+pub struct PageTable {
+    pub entries: [u64; 512],
+}
+
+impl PageTable {
+    pub fn zero(&mut self) {
+        for i in 0..512 {
+            self.entries[i] = 0;
+        }
+    }
+}
+
+/// Helper to get a mutable reference to a PageTable from a physical address.
+unsafe fn get_table_mut(phys_addr: u64) -> &'static mut PageTable {
+    unsafe { &mut *(phys_addr as *mut PageTable) }
+}
+
+/// Maps a virtual address to a physical address.
+pub unsafe fn map_page(
+    pml4: &mut PageTable,
+    virt_addr: u64,
+    phys_addr: u64,
+    flags: u64,
+    allocator: &mut FrameAllocator
+) {
+    let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
+    let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
+    let pd_idx = ((virt_addr >> 21) & 0x1FF) as usize;
+    let pt_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+
+    // 1. Get PDPT
+    if (pml4.entries[pml4_idx] & PAGE_PRESENT) == 0 {
+        let frame = allocator.allocate_frame().expect("OOM allocating PDPT");
+        let table = unsafe { get_table_mut(frame) };
+        table.zero();
+        pml4.entries[pml4_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    }
+    let pdpt_phys = pml4.entries[pml4_idx] & !0xFFF;
+    let pdpt = unsafe { get_table_mut(pdpt_phys) };
+
+    // 2. Get PD
+    if (pdpt.entries[pdp_idx] & PAGE_PRESENT) == 0 {
+        let frame = allocator.allocate_frame().expect("OOM allocating PD");
+        let table = unsafe { get_table_mut(frame) };
+        table.zero();
+        pdpt.entries[pdp_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    }
+    let pd_phys = pdpt.entries[pdp_idx] & !0xFFF;
+    let pd = unsafe { get_table_mut(pd_phys) };
+
+    // 3. Get PT
+    if (pd.entries[pd_idx] & PAGE_PRESENT) == 0 {
+        let frame = allocator.allocate_frame().expect("OOM allocating PT");
+        let table = unsafe { get_table_mut(frame) };
+        table.zero();
+        pd.entries[pd_idx] = frame | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
+    }
+    let pt_phys = pd.entries[pd_idx] & !0xFFF;
+    let pt = unsafe { get_table_mut(pt_phys) };
+
+    // 4. Map Page
+    pt.entries[pt_idx] = phys_addr | flags | PAGE_PRESENT;
+}
+
+pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) -> u64 {
+    // 1. Allocate PML4
+    let pml4_phys = allocator.allocate_frame().expect("Failed to allocate PML4");
+    let pml4 = unsafe { get_table_mut(pml4_phys) };
+    pml4.zero();
+
+    // 2. Identity Map Regions
+    let num_descriptors = allocator.memory_map_size / allocator.descriptor_size;
+    
+    for i in 0..num_descriptors {
+         let offset = i * allocator.descriptor_size;
+         let descriptor_ptr = unsafe { allocator.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
+         let descriptor = unsafe { &*descriptor_ptr };
+
+         match descriptor.Type {
+            crate::uefi::EFI_CONVENTIONAL_MEMORY | 
+            crate::uefi::EFI_LOADER_CODE | 
+            crate::uefi::EFI_LOADER_DATA |
+            crate::uefi::EFI_BOOT_SERVICES_CODE |
+            crate::uefi::EFI_BOOT_SERVICES_DATA |
+            crate::uefi::EFI_RUNTIME_SERVICES_CODE |
+            crate::uefi::EFI_RUNTIME_SERVICES_DATA | 
+            crate::uefi::EFI_ACPI_RECLAIM_MEMORY |
+            crate::uefi::EFI_ACPI_MEMORY_NVS |
+            crate::uefi::EFI_MEMORY_MAPPED_IO |
+            crate::uefi::EFI_MEMORY_MAPPED_IO_PORT_SPACE => {
+                let start = descriptor.PhysicalStart;
+                let end = start + (descriptor.NumberOfPages * PAGE_SIZE);
+                for addr in (start..end).step_by(PAGE_SIZE as usize) {
+                    unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
+                }
+            },
+            _ => {}
+         }
+    }
+
+    // 3. Map Framebuffer
+    let fb_base = boot_info.framebuffer_base;
+    let fb_size = boot_info.framebuffer_size as u64;
+    for addr in (fb_base..(fb_base + fb_size)).step_by(PAGE_SIZE as usize) {
+        unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
+    }
+    
+    // 4. Load CR3
+    unsafe { asm!("mov cr3, {}", in(reg) pml4_phys) };
+    
+    pml4_phys
 }
