@@ -2,6 +2,14 @@ use super::BootInfo;
 use core::fmt;
 use font8x8::{UnicodeFonts, BASIC_FONTS};
 
+pub static mut GLOBAL_WRITER: Option<Writer> = None;
+
+pub unsafe fn init_global_writer(info: BootInfo) {
+    unsafe {
+        GLOBAL_WRITER = Some(Writer::new(info));
+    }
+}
+
 pub struct Writer {
     framebuffer: *mut u8,
     info: BootInfo,

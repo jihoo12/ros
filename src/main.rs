@@ -25,7 +25,9 @@ pub struct BootInfo {
     pub descriptor_version: u32,
 }
 
+mod gdt;
 mod memory;
+mod interrupts;
 
 mod writer;
 use core::fmt::Write;
@@ -41,6 +43,18 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Frame Allocator
     let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
 
+    // Initialize Global Writer (for interrupts)
+    unsafe {
+        writer::init_global_writer(*boot_info);
+    }
+
+    // Initialize GDT
+    unsafe {
+        gdt::init();
+        interrupts::init_idt();
+        let _ = writeln!(writer, "GDT & IDT Initialized!");
+    }
+
     unsafe {
         memory::init_paging(boot_info, &mut allocator);
         let _ = writeln!(writer, "Paging Initialized!");
@@ -54,7 +68,6 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let _ = writeln!(writer, "Failed to allocate frame {}", i);
         }
     }
-
     loop {}
 }
 

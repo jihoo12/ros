@@ -1,0 +1,307 @@
+use core::arch::asm;
+use core::mem::size_of;
+use crate::writer::GLOBAL_WRITER;
+use core::fmt::Write;
+
+pub const KERNEL_CODE_SEL: u16 = 0x08;
+
+#[allow(dead_code)]
+unsafe extern "C" {
+    fn isr0();
+    fn isr1();
+    fn isr2();
+    fn isr3();
+    fn isr4();
+    fn isr5();
+    fn isr6();
+    fn isr7();
+    fn isr8();
+    fn isr9();
+    fn isr10();
+    fn isr11();
+    fn isr12();
+    fn isr13();
+    fn isr14();
+    fn isr15();
+    fn isr16();
+    fn isr17();
+    fn isr18();
+    fn isr19();
+    fn isr20();
+    fn isr21();
+    fn isr22();
+    fn isr23();
+    fn isr24();
+    fn isr25();
+    fn isr26();
+    fn isr27();
+    fn isr28();
+    fn isr29();
+    fn isr30();
+    fn isr31();
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(C, packed)]
+pub struct IdtEntry {
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    type_attr: u8,
+    offset_mid: u16,
+    offset_high: u32,
+    zero: u32,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct IdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+#[repr(C)]
+pub struct InterruptFrame {
+    pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64, pub r11: u64, pub r10: u64, pub r9: u64, pub r8: u64,
+    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rdx: u64, pub rcx: u64, pub rbx: u64, pub rax: u64,
+    pub int_no: u64,
+    pub err_code: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+static mut IDT: [IdtEntry; 256] = [IdtEntry {
+    offset_low: 0,
+    selector: 0,
+    ist: 0,
+    type_attr: 0,
+    offset_mid: 0,
+    offset_high: 0,
+    zero: 0,
+}; 256];
+
+static mut IDT_PTR: IdtPointer = IdtPointer { limit: 0, base: 0 };
+
+pub unsafe fn set_gate(vector: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8) {
+    let addr = handler as u64;
+    unsafe {
+        IDT[vector].offset_low = (addr & 0xFFFF) as u16;
+        IDT[vector].selector = selector;
+        IDT[vector].ist = 0;
+        IDT[vector].type_attr = type_attr;
+        IDT[vector].offset_mid = ((addr >> 16) & 0xFFFF) as u16;
+        IDT[vector].offset_high = ((addr >> 32) & 0xFFFFFFFF) as u32;
+        IDT[vector].zero = 0;
+    }
+}
+
+pub unsafe fn init_idt() {
+    unsafe {
+        // Initialize with default/generic handlers if needed, but here we set specific exceptions
+        
+        set_gate(0, isr0, KERNEL_CODE_SEL, 0x8E);
+        set_gate(1, isr1, KERNEL_CODE_SEL, 0x8E);
+        set_gate(2, isr2, KERNEL_CODE_SEL, 0x8E);
+        set_gate(3, isr3, KERNEL_CODE_SEL, 0x8E);
+        set_gate(4, isr4, KERNEL_CODE_SEL, 0x8E);
+        set_gate(5, isr5, KERNEL_CODE_SEL, 0x8E);
+        set_gate(6, isr6, KERNEL_CODE_SEL, 0x8E);
+        set_gate(7, isr7, KERNEL_CODE_SEL, 0x8E);
+        set_gate(8, isr8, KERNEL_CODE_SEL, 0x8E);
+        set_gate(9, isr9, KERNEL_CODE_SEL, 0x8E);
+        set_gate(10, isr10, KERNEL_CODE_SEL, 0x8E);
+        set_gate(11, isr11, KERNEL_CODE_SEL, 0x8E);
+        set_gate(12, isr12, KERNEL_CODE_SEL, 0x8E);
+        set_gate(13, isr13, KERNEL_CODE_SEL, 0x8E);
+        set_gate(14, isr14, KERNEL_CODE_SEL, 0x8E);
+        set_gate(15, isr15, KERNEL_CODE_SEL, 0x8E);
+        set_gate(16, isr16, KERNEL_CODE_SEL, 0x8E);
+        set_gate(17, isr17, KERNEL_CODE_SEL, 0x8E);
+        set_gate(18, isr18, KERNEL_CODE_SEL, 0x8E);
+        set_gate(19, isr19, KERNEL_CODE_SEL, 0x8E);
+        set_gate(20, isr20, KERNEL_CODE_SEL, 0x8E);
+        set_gate(21, isr21, KERNEL_CODE_SEL, 0x8E);
+        set_gate(22, isr22, KERNEL_CODE_SEL, 0x8E);
+        set_gate(23, isr23, KERNEL_CODE_SEL, 0x8E);
+        set_gate(24, isr24, KERNEL_CODE_SEL, 0x8E);
+        set_gate(25, isr25, KERNEL_CODE_SEL, 0x8E);
+        set_gate(26, isr26, KERNEL_CODE_SEL, 0x8E);
+        set_gate(27, isr27, KERNEL_CODE_SEL, 0x8E);
+        set_gate(28, isr28, KERNEL_CODE_SEL, 0x8E);
+        set_gate(29, isr29, KERNEL_CODE_SEL, 0x8E);
+        set_gate(30, isr30, KERNEL_CODE_SEL, 0x8E);
+        set_gate(31, isr31, KERNEL_CODE_SEL, 0x8E);
+
+        IDT_PTR.limit = (size_of::<[IdtEntry; 256]>() - 1) as u16;
+        IDT_PTR.base = &raw const IDT as *const _ as u64;
+
+        asm!(
+            "lidt [{}]",
+            in(reg) &raw const IDT_PTR,
+            options(readonly, nostack, preserves_flags)
+        );
+    }
+}
+
+const EXCEPTION_MESSAGES: [&str; 32] = [
+    "DIVISION BY ZERO",
+    "DEBUG",
+    "NON MASKABLE INTERRUPT",
+    "BREAKPOINT",
+    "INTO DETECTED OVERFLOW",
+    "OUT OF BOUNDS",
+    "INVALID OPCODE",
+    "NO COPROCESSOR",
+    "DOUBLE FAULT",
+    "COPROCESSOR SEGMENT OVERRUN",
+    "BAD TSS",
+    "SEGMENT NOT PRESENT",
+    "STACK FAULT",
+    "GENERAL PROTECTION FAULT",
+    "PAGE FAULT",
+    "UNKNOWN INTERRUPT",
+    "CO-PROCESSOR FAULT",
+    "ALIGNMENT CHECK",
+    "MACHINE CHECK",
+    "SIMD FLOATING POINT EXCEPTION",
+    "VIRTUALIZATION EXCEPTION",
+    "CONTROL PROTECTION EXCEPTION",
+    "RESERVED",
+    "RESERVED",
+    "RESERVED",
+    "RESERVED",
+    "RESERVED",
+    "RESERVED",
+    "HYPervisor INJECTION EXCEPTION",
+    "VMX COMMUNICATION EXCEPTION",
+    "SECURITY EXCEPTION",
+    "RESERVED"
+];
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
+    let frame = unsafe { &*frame };
+    
+    // Safety: Global writer access is unsafe. We use addr_of_mut! to avoid creating an intermediate
+    // reference that violates Rust 2024 static_mut_refs rules.
+    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+        let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
+        let _ = write!(writer, "INTERRUPT: {:#x} ", frame.int_no);
+        
+        if (frame.int_no as usize) < EXCEPTION_MESSAGES.len() {
+             let _ = writeln!(writer, "({})", EXCEPTION_MESSAGES[frame.int_no as usize]);
+        } else {
+             let _ = writeln!(writer, "");
+        }
+
+        let _ = writeln!(writer, "ERROR CODE: {:#x}", frame.err_code);
+        let _ = writeln!(writer, "RIP: {:#x}", frame.rip);
+        let _ = writeln!(writer, "RAX: {:#x}  RBX: {:#x}  RCX: {:#x}  RDX: {:#x}", frame.rax, frame.rbx, frame.rcx, frame.rdx);
+        let _ = writeln!(writer, "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}", frame.rsi, frame.rdi, frame.rbp, frame.rsp);
+        
+        if frame.int_no == 14 { // Page Fault
+             let cr2: u64;
+             unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+             let _ = writeln!(writer, "CR2 (ADDR): {:#x}", cr2);
+        }
+    }
+
+    loop {
+        unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)); }
+    }
+}
+
+// Assembly stubs
+core::arch::global_asm!(r#"
+.att_syntax
+.macro ISR_NOERR n
+    .global isr\n
+    isr\n:
+        pushq $0
+        pushq $\n
+        jmp isr_common
+.endm
+
+.macro ISR_ERR n
+    .global isr\n
+    isr\n:
+        pushq $\n
+        jmp isr_common
+.endm
+
+ISR_NOERR 0
+ISR_NOERR 1
+ISR_NOERR 2
+ISR_NOERR 3
+ISR_NOERR 4
+ISR_NOERR 5
+ISR_NOERR 6
+ISR_NOERR 7
+ISR_ERR   8
+ISR_NOERR 9
+ISR_ERR   10
+ISR_ERR   11
+ISR_ERR   12
+ISR_ERR   13
+ISR_ERR   14
+ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR   17
+ISR_NOERR 18
+ISR_NOERR 19
+ISR_NOERR 20
+ISR_ERR   21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+ISR_ERR   29
+ISR_ERR   30
+ISR_NOERR 31
+
+.global isr_common
+isr_common:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rbp
+    pushq %rdi
+    pushq %rsi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    movq %rsp, %rdi
+    call exception_handler
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rsi
+    popq %rdi
+    popq %rbp
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    addq $16, %rsp
+    iretq
+"#);
