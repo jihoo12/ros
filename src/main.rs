@@ -68,7 +68,51 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let _ = writeln!(writer, "Failed to allocate frame {}", i);
         }
     }
+
+    // Switch to User Mode
+    unsafe {
+        let _ = writeln!(writer, "Switching to User Mode...");
+        enter_usermode();
+    }
+    //it is unreachable code if it successfully switches to user mode
+    let _ = writeln!(writer, "failed to switch to user mode");
     loop {}
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "sysv64" fn user_main() {
+    loop {
+        // Spin in user mode
+    }
+}
+
+pub unsafe fn enter_usermode() -> ! {
+    let user_cs: u64 = gdt::USER_CODE_SEL as u64; 
+    let user_ds: u64 = gdt::USER_DATA_SEL as u64; 
+    let user_rsp = 0x100000u64; 
+    
+    use core::arch::asm;
+    
+    // RFLAGS: Interrupts enabled (0x200) | Reserved (0x2) = 0x202
+    let rflags: u64 = 0x202;
+    let rip = user_main as u64;
+
+    unsafe {
+        asm!(
+            "push {ds}",       // SS
+            "push {rsp}",      // RSP
+            "push {rflags}",   // RFLAGS
+            "push {cs}",       // CS
+            "push {rip}",      // RIP
+            "iretq",
+            ds = in(reg) user_ds,
+            rsp = in(reg) user_rsp,
+            rflags = in(reg) rflags,
+            cs = in(reg) user_cs,
+            rip = in(reg) rip,
+            options(noreturn)
+        );
+    }
 }
 
 #[unsafe(no_mangle)]
