@@ -1,0 +1,13 @@
+[package]
+name = "os"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

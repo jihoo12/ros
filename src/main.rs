@@ -1,0 +1,140 @@
+#![no_std]
+#![no_main]
+
+mod uefi;
+use uefi::*;
+use core::ffi::c_void;
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct BootInfo {
+    pub framebuffer_base: u64,
+    pub framebuffer_size: usize,
+    pub horizontal_resolution: u32,
+    pub vertical_resolution: u32,
+    pub pixels_per_scanline: u32,
+    pub pixel_format: u32, // Simplified Enum mapping
+    pub memory_map: *mut u8,
+    pub memory_map_size: usize,
+    pub descriptor_size: usize,
+    pub descriptor_version: u32,
+}
+
+mod writer;
+use core::fmt::Write;
+
+#[unsafe(no_mangle)]
+pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
+    let mut writer = writer::Writer::new(*boot_info);
+
+    let _ = writeln!(writer, "Hello World from Kernel!");
+    let _ = writeln!(writer, "Resolution: {}x{}", boot_info.horizontal_resolution, boot_info.vertical_resolution);
+    let _ = writeln!(writer, "Framebuffer: {:#x}", boot_info.framebuffer_base);
+
+    loop {}
+}
+
+#[unsafe(no_mangle)]
+pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EFI_SYSTEM_TABLE) -> EFI_STATUS {
+    // 1. Initialize formatted output (minimal)
+    let msg = "Getting ready to jump to kernel...\r\n\0";
+    let mut buffer: [u16; 64] = [0; 64];
+    for (i, b) in msg.bytes().enumerate() {
+        if i >= 63 { break; }
+        buffer[i] = b as u16;
+    }
+    
+    unsafe {
+        let con_out = (*system_table).ConOut;
+        ((*con_out).OutputString)(con_out, buffer.as_ptr());
+    }
+
+    let boot_services = unsafe { (*system_table).BootServices };
+
+    // 2. Locate GOP
+    let mut gop: *mut EFI_GRAPHICS_OUTPUT_PROTOCOL = core::ptr::null_mut();
+    let gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    
+    let status = unsafe {
+        ((*boot_services).LocateProtocol)(
+            &gop_guid as *const EFI_GUID,
+            core::ptr::null_mut(),
+            &mut gop as *mut *mut EFI_GRAPHICS_OUTPUT_PROTOCOL as *mut *mut c_void
+        )
+    };
+
+    if status != 0 {
+        // Failed to locate GOP
+        return status;
+    }
+
+    // 3. Prepare BootInfo
+    let mode = unsafe { *(*gop).Mode };
+    let info = unsafe { *mode.Info };
+    
+    // Framebuffer might need mapping? In UEFI it is identity mapped or IO mapped.
+    // We assume we can access it directly for now (x86_64 UEFI usually maps it).
+    
+    let framebuffer_base = mode.FrameBufferBase;
+    let framebuffer_size = mode.FrameBufferSize;
+    let horizontal_resolution = info.HorizontalResolution;
+    let vertical_resolution = info.VerticalResolution;
+    let pixels_per_scanline = info.PixelsPerScanLine;
+    let pixel_format = info.PixelFormat as u32;
+
+    // 4. Get Memory Map
+    // We need a larger buffer for real hardware.
+    // Using static buffer to avoid stack overflow or allocation issues.
+    // But since no global allocator, we put it on stack or use raw bytes.
+    // 16KB should be enough.
+    let mut memory_map_buffer = [0u8; 16384]; 
+    let mut memory_map_size = memory_map_buffer.len();
+    let mut map_key: usize = 0;
+    let mut descriptor_size: usize = 0;
+    let mut descriptor_version: u32 = 0;
+
+    let memory_map_ptr = memory_map_buffer.as_mut_ptr() as *mut EFI_MEMORY_DESCRIPTOR;
+
+    let status = unsafe {
+        ((*boot_services).GetMemoryMap)(
+            &mut memory_map_size,
+            memory_map_ptr,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version
+        )
+    };
+
+    if status != 0 {
+        return status;
+    }
+
+    // 5. Exit Boot Services
+    let status = unsafe { ((*boot_services).ExitBootServices)(_image_handle, map_key) };
+
+    if status != 0 {
+        // Retry logic might be needed here (memory map changed), but for simple case we return error.
+        return status;
+    }
+
+    // 6. Jump to Kernel
+    let boot_info = BootInfo {
+        framebuffer_base,
+        framebuffer_size,
+        horizontal_resolution,
+        vertical_resolution,
+        pixels_per_scanline,
+        pixel_format,
+        memory_map: memory_map_ptr as *mut u8,
+        memory_map_size,
+        descriptor_size,
+        descriptor_version,
+    };
+
+    kernel_main(&boot_info);
+}
