@@ -1,10 +1,13 @@
 #![no_std]
 #![no_main]
 
-mod uefi;
-use uefi::*;
-use core::ffi::c_void;
+extern crate alloc;
 
+mod uefi;
+use core::ffi::c_void;
+use uefi::*;
+
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -25,14 +28,15 @@ pub struct BootInfo {
     pub descriptor_version: u32,
 }
 
-mod gdt;
-mod memory;
-mod interrupts;
-mod syscall;
 mod allocator;
+mod gdt;
+mod interrupts;
 mod io;
-mod pic;
 mod keyboard;
+mod memory;
+mod pic;
+mod scheduler;
+mod syscall;
 
 mod writer;
 use core::fmt::Write;
@@ -43,10 +47,13 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         writer::init_global_writer(*boot_info);
     }
-    
+
     // We can now use println!
     println!("Hello World from Kernel!");
-    println!("Resolution: {}x{}", boot_info.horizontal_resolution, boot_info.vertical_resolution);
+    println!(
+        "Resolution: {}x{}",
+        boot_info.horizontal_resolution, boot_info.vertical_resolution
+    );
     println!("Framebuffer: {:#x}", boot_info.framebuffer_base);
 
     // Initialize Frame Allocator
@@ -62,14 +69,14 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         memory::init_paging(boot_info, &mut allocator);
         println!("Paging Initialized!");
-        
+
         // Initialize PIC and Interrupts
         pic::init();
         // Enable interrupts
         core::arch::asm!("sti");
         println!("Interrupts Enabled!");
     }
-    
+
     // Initialize Syscalls
     unsafe {
         syscall::init();
@@ -79,9 +86,11 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap
     let heap_pages = 128; // 512KB
-    let heap_start = allocator.allocate_frame().expect("Failed to allocate heap start");
+    let heap_start = allocator
+        .allocate_frame()
+        .expect("Failed to allocate heap start");
     let mut current_addr = heap_start;
-    
+
     // Allocate the rest of the pages and ensure they are contiguous
     for _ in 1..heap_pages {
         let next_addr = allocator.allocate_frame().expect("Failed to allocate heap");
@@ -94,20 +103,66 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         allocator::init(heap_start as usize, (heap_pages * 4096) as usize);
     }
+    unsafe {
+        scheduler::init();
+        crate::println!("Scheduler Initialized!");
+
+        let stack_size = 4096 * 4;
+        let stack_a = allocator::alloc(stack_size) as u64;
+        let stack_b = allocator::alloc(stack_size) as u64;
+
+        scheduler::add_new_task(task_a, stack_a, stack_size);
+        scheduler::add_new_task(task_b, stack_b, stack_size);
+    }
+
+    // Main Loop (Task 0)
+    loop {
+        crate::println!("Main Task (ID 0) yielding...");
+        scheduler::switch_task();
+        // Simple delay
+        for _ in 0..10000000 {
+            core::hint::spin_loop();
+        }
+    }
 
     // Allocate User Stack
     // We allocate 1 page for the user stack.
-    let user_stack_frame = allocator.allocate_frame().expect("Failed to allocate user stack");
+    let user_stack_frame = allocator
+        .allocate_frame()
+        .expect("Failed to allocate user stack");
     // Identity mapped, so virtual = physical (checked in memory.rs)
     // Stack grows down, so top is end of page.
-    let user_top_stack = user_stack_frame + 4096;
+    let _user_top_stack = user_stack_frame + 4096;
+}
 
+extern "C" fn task_a() {
+    loop {
+        crate::println!("Task A running");
+        crate::scheduler::switch_task();
+        for _ in 0..10000000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+extern "C" fn task_b() {
+    loop {
+        crate::println!("Task B running");
+        crate::scheduler::switch_task();
+        for _ in 0..10000000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+// Commented out User Mode switch for Scheduler testing
+/*
     // Switch to User Mode
     unsafe {
         println!("Switching to User Mode...");
         enter_usermode(user_top_stack);
     }
-}
+*/
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
@@ -120,18 +175,26 @@ pub unsafe extern "sysv64" fn user_main() {
     unsafe {
         let size = 128; // 128 bytes
         let ptr = syscall(2, size, 0, 0, 0, 0, 0) as *mut u8;
-        
+
         if !ptr.is_null() {
             let success_msg = "Allocated memory successfully!\n";
-            syscall(1, success_msg.as_ptr() as usize, success_msg.len(), 0, 0, 0, 0);
-            
+            syscall(
+                1,
+                success_msg.as_ptr() as usize,
+                success_msg.len(),
+                0,
+                0,
+                0,
+                0,
+            );
+
             // Write to it
             *ptr = b'A';
             *ptr.add(1) = b'B';
             *ptr.add(2) = b'C';
             *ptr.add(3) = 0; // null terminator if we were using it for C-string
-            
-    // Verify? We can just print saying we wrote to it.
+
+            // Verify? We can just print saying we wrote to it.
             let write_msg = "Wrote to allocated memory.\n";
             syscall(1, write_msg.as_ptr() as usize, write_msg.len(), 0, 0, 0, 0);
 
@@ -144,25 +207,19 @@ pub unsafe extern "sysv64" fn user_main() {
             syscall(1, fail_msg.as_ptr() as usize, fail_msg.len(), 0, 0, 0, 0);
         }
     }
-
-    let msg = "Type something: ";
-    unsafe { syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0); }
-
-    loop {
-        // Poll for keyboard input
-        unsafe {
-            let c = syscall(4, 0, 0, 0, 0, 0, 0);
-            if c != 0 {
-                // Echo back
-                let char_buf = [c as u8];
-                syscall(1, char_buf.as_ptr() as usize, 1, 0, 0, 0, 0);
-            }
-        }
-    }
+    loop {}
 }
 
 #[inline(always)]
-unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> usize {
+unsafe fn syscall(
+    id: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+    arg6: usize,
+) -> usize {
     let ret: usize;
     unsafe {
         core::arch::asm!(
@@ -175,7 +232,7 @@ unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
             in("r8") arg5,
             in("r9") arg6,
             lateout("rax") ret,
-            lateout("rcx") _, 
+            lateout("rcx") _,
             lateout("r11") _,
             options(nostack, preserves_flags)
         );
@@ -184,11 +241,11 @@ unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
 }
 
 pub unsafe fn enter_usermode(user_rsp: u64) -> ! {
-    let user_cs: u64 = gdt::USER_CODE_SEL as u64; 
-    let user_ds: u64 = gdt::USER_DATA_SEL as u64; 
-    
+    let user_cs: u64 = gdt::USER_CODE_SEL as u64;
+    let user_ds: u64 = gdt::USER_DATA_SEL as u64;
+
     use core::arch::asm;
-    
+
     // RFLAGS: Interrupts enabled (0x200) | Reserved (0x2) = 0x202
     let rflags: u64 = 0x202;
     let rip = user_main as u64;
@@ -212,15 +269,20 @@ pub unsafe fn enter_usermode(user_rsp: u64) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EFI_SYSTEM_TABLE) -> EFI_STATUS {
+pub extern "efiapi" fn efi_main(
+    _image_handle: EFI_HANDLE,
+    system_table: *mut EFI_SYSTEM_TABLE,
+) -> EFI_STATUS {
     // 1. Initialize formatted output (minimal)
     let msg = "Getting ready to jump to kernel...\r\n\0";
     let mut buffer: [u16; 64] = [0; 64];
     for (i, b) in msg.bytes().enumerate() {
-        if i >= 63 { break; }
+        if i >= 63 {
+            break;
+        }
         buffer[i] = b as u16;
     }
-    
+
     unsafe {
         let con_out = (*system_table).ConOut;
         ((*con_out).OutputString)(con_out, buffer.as_ptr());
@@ -231,12 +293,12 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
     // 2. Locate GOP
     let mut gop: *mut EFI_GRAPHICS_OUTPUT_PROTOCOL = core::ptr::null_mut();
     let gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
-    
+
     let status = unsafe {
         ((*boot_services).LocateProtocol)(
             &gop_guid as *const EFI_GUID,
             core::ptr::null_mut(),
-            &mut gop as *mut *mut EFI_GRAPHICS_OUTPUT_PROTOCOL as *mut *mut c_void
+            &mut gop as *mut *mut EFI_GRAPHICS_OUTPUT_PROTOCOL as *mut *mut c_void,
         )
     };
 
@@ -248,10 +310,10 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
     // 3. Prepare BootInfo
     let mode = unsafe { *(*gop).Mode };
     let info = unsafe { *mode.Info };
-    
+
     // Framebuffer might need mapping? In UEFI it is identity mapped or IO mapped.
     // We assume we can access it directly for now (x86_64 UEFI usually maps it).
-    
+
     let framebuffer_base = mode.FrameBufferBase;
     let framebuffer_size = mode.FrameBufferSize;
     let horizontal_resolution = info.HorizontalResolution;
@@ -264,7 +326,7 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
     // Using static buffer to avoid stack overflow or allocation issues.
     // But since no global allocator, we put it on stack or use raw bytes.
     // 16KB should be enough.
-    let mut memory_map_buffer = [0u8; 16384]; 
+    let mut memory_map_buffer = [0u8; 16384];
     let mut memory_map_size = memory_map_buffer.len();
     let mut map_key: usize = 0;
     let mut descriptor_size: usize = 0;
@@ -278,7 +340,7 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
             memory_map_ptr,
             &mut map_key,
             &mut descriptor_size,
-            &mut descriptor_version
+            &mut descriptor_version,
         )
     };
 
@@ -299,7 +361,7 @@ pub extern "efiapi" fn efi_main(_image_handle: EFI_HANDLE, system_table: *mut EF
                 memory_map_ptr,
                 &mut map_key,
                 &mut descriptor_size,
-                &mut descriptor_version
+                &mut descriptor_version,
             )
         };
 

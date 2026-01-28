@@ -99,3 +99,20 @@ pub unsafe fn free(ptr: *mut u8) {
         }
     }
 }
+
+use core::alloc::{GlobalAlloc, Layout};
+
+struct KernelAllocator;
+
+unsafe impl GlobalAlloc for KernelAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Pass size to our simple allocator
+        alloc(layout.size())
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        free(ptr);
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: KernelAllocator = KernelAllocator;

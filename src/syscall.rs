@@ -168,10 +168,17 @@ use core::str;
 
 fn sys_print(ptr: usize, len: usize) {
     let slice = unsafe { slice::from_raw_parts(ptr as *const u8, len) };
-    if let Ok(s) = str::from_utf8(slice) {
-        crate::print!("{}", s);
-    } else {
-        crate::print!("(sys_print: invalid utf8)");
+    match str::from_utf8(slice) {
+        Ok(s) => {
+            crate::print!("{}", s);
+            // Debug: Echo to serial port (COM1 0x3F8)
+            for b in s.bytes() {
+                unsafe { crate::io::outb(0x3F8, b); }
+            }
+        },
+        Err(e) => {
+            crate::print!("(sys_print: invalid utf8, ptr={:#x}, len={}, byte={:#x}, err={})", ptr, len, slice[0], e);
+        }
     }
 }
 

@@ -1,9 +1,9 @@
 #![allow(bad_asm_style)]
 
-use core::arch::asm;
-use core::mem::size_of;
 use crate::writer::GLOBAL_WRITER;
+use core::arch::asm;
 use core::fmt::Write;
+use core::mem::size_of;
 
 pub const KERNEL_CODE_SEL: u16 = 0x08;
 
@@ -41,7 +41,7 @@ unsafe extern "C" {
     fn isr29();
     fn isr30();
     fn isr31();
-    
+
     // IRQ Handlers
     fn irq0();
     fn irq1();
@@ -68,8 +68,21 @@ pub struct IdtPointer {
 
 #[repr(C)]
 pub struct InterruptFrame {
-    pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64, pub r11: u64, pub r10: u64, pub r9: u64, pub r8: u64,
-    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rdx: u64, pub rcx: u64, pub rbx: u64, pub rax: u64,
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
     pub int_no: u64,
     pub err_code: u64,
     pub rip: u64,
@@ -91,7 +104,12 @@ static mut IDT: [IdtEntry; 256] = [IdtEntry {
 
 static mut IDT_PTR: IdtPointer = IdtPointer { limit: 0, base: 0 };
 
-pub unsafe fn set_gate(vector: usize, handler: unsafe extern "C" fn(), selector: u16, type_attr: u8) {
+pub unsafe fn set_gate(
+    vector: usize,
+    handler: unsafe extern "C" fn(),
+    selector: u16,
+    type_attr: u8,
+) {
     let addr = handler as u64;
     unsafe {
         IDT[vector].offset_low = (addr & 0xFFFF) as u16;
@@ -107,7 +125,7 @@ pub unsafe fn set_gate(vector: usize, handler: unsafe extern "C" fn(), selector:
 pub unsafe fn init_idt() {
     unsafe {
         // Initialize with default/generic handlers if needed, but here we set specific exceptions
-        
+
         set_gate(0, isr0, KERNEL_CODE_SEL, 0x8E);
         set_gate(1, isr1, KERNEL_CODE_SEL, 0x8E);
         set_gate(2, isr2, KERNEL_CODE_SEL, 0x8E);
@@ -117,7 +135,7 @@ pub unsafe fn init_idt() {
         set_gate(6, isr6, KERNEL_CODE_SEL, 0x8E);
         set_gate(7, isr7, KERNEL_CODE_SEL, 0x8E);
         set_gate(8, isr8, KERNEL_CODE_SEL, 0x8E);
-        
+
         // Set IST Stack for Double Fault
         IDT[8].ist = crate::gdt::DOUBLE_FAULT_IST_INDEX as u8;
         set_gate(9, isr9, KERNEL_CODE_SEL, 0x8E);
@@ -191,40 +209,53 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
     "HYPervisor INJECTION EXCEPTION",
     "VMX COMMUNICATION EXCEPTION",
     "SECURITY EXCEPTION",
-    "RESERVED"
+    "RESERVED",
 ];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
     let frame = unsafe { &*frame };
-    
+
     // Safety: Global writer access is unsafe. We use addr_of_mut! to avoid creating an intermediate
     // reference that violates Rust 2024 static_mut_refs rules.
     #[allow(static_mut_refs)]
     if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
         let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
         let _ = write!(writer, "INTERRUPT: {:#x} ", frame.int_no);
-        
+
         if (frame.int_no as usize) < EXCEPTION_MESSAGES.len() {
-             let _ = writeln!(writer, "({})", EXCEPTION_MESSAGES[frame.int_no as usize]);
+            let _ = writeln!(writer, "({})", EXCEPTION_MESSAGES[frame.int_no as usize]);
         } else {
-             let _ = writeln!(writer, "");
+            let _ = writeln!(writer, "");
         }
 
         let _ = writeln!(writer, "ERROR CODE: {:#x}", frame.err_code);
         let _ = writeln!(writer, "RIP: {:#x}", frame.rip);
-        let _ = writeln!(writer, "RAX: {:#x}  RBX: {:#x}  RCX: {:#x}  RDX: {:#x}", frame.rax, frame.rbx, frame.rcx, frame.rdx);
-        let _ = writeln!(writer, "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}", frame.rsi, frame.rdi, frame.rbp, frame.rsp);
-        
-        if frame.int_no == 14 { // Page Fault
-             let cr2: u64;
-             unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-             let _ = writeln!(writer, "CR2 (ADDR): {:#x}", cr2);
+        let _ = writeln!(
+            writer,
+            "RAX: {:#x}  RBX: {:#x}  RCX: {:#x}  RDX: {:#x}",
+            frame.rax, frame.rbx, frame.rcx, frame.rdx
+        );
+        let _ = writeln!(
+            writer,
+            "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}",
+            frame.rsi, frame.rdi, frame.rbp, frame.rsp
+        );
+
+        if frame.int_no == 14 {
+            // Page Fault
+            let cr2: u64;
+            unsafe {
+                asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+            }
+            let _ = writeln!(writer, "CR2 (ADDR): {:#x}", cr2);
         }
     }
 
     loop {
-        unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
     }
 }
 
@@ -239,7 +270,9 @@ pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
         }
         1 => {
             // Keyboard
-            unsafe { crate::keyboard::handle_interrupt(); }
+            unsafe {
+                crate::keyboard::handle_interrupt();
+            }
         }
         _ => {
             // Create a scope to manage writer lifetime
@@ -251,11 +284,14 @@ pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
         }
     }
 
-    unsafe { crate::pic::notify_eoi(irq as u8); }
+    unsafe {
+        crate::pic::notify_eoi(irq as u8);
+    }
 }
 
 // Assembly stubs
-core::arch::global_asm!(r#"
+core::arch::global_asm!(
+    r#"
 .att_syntax
 .macro ISR_NOERR n
     .global isr\n
@@ -395,4 +431,5 @@ isr_common:
 
     addq $16, %rsp
     iretq
-"#);
+"#
+);
