@@ -5,7 +5,6 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // Re-using the allocator from the crate
-use crate::allocator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -16,9 +15,11 @@ pub enum TaskStatus {
 
 pub struct Task {
     pub id: usize,
-    pub stack_top: u64,    // Saved Stack Pointer (RSP)
-    pub stack_bottom: u64, // For deallocation reference
+    pub stack_top: u64,    // Saved Stack Pointer (current RSP)
+    pub stack_bottom: u64, // For deallocation reference (user stack if usermode)
     pub status: TaskStatus,
+    pub kernel_stack_bottom: u64,
+    pub gs_base: u64, // Pointer to KernelGsBase struct
 }
 
 pub struct Scheduler {
@@ -32,31 +33,108 @@ static NEXT_TASK_ID: AtomicUsize = AtomicUsize::new(1); // 0 is reserved for mai
 /// Initialize the global scheduler.
 /// This must be called only once.
 pub unsafe fn init() {
-    SCHEDULER = Some(Scheduler {
-        tasks: Vec::new(),
-        current_task_index: 0,
-    });
+    unsafe {
+        SCHEDULER = Some(Scheduler {
+            tasks: Vec::new(),
+            current_task_index: 0,
+        });
+    }
 
     // Create a dummy task for the currently running kernel thread (Main Task)
-    // We don't need to allocate a stack for it because it's already using one.
-    // When we switch AWAY from it, we will save its state.
     let main_task = Task {
         id: 0,
-        stack_top: 0,    // Will be updated on first switch
-        stack_bottom: 0, // 0 implies we don't own this stack, so don't free it
+        stack_top: 0,
+        stack_bottom: 0,
         status: TaskStatus::Running,
+        kernel_stack_bottom: 0,
+        gs_base: unsafe { crate::syscall::get_global_gs_base() },
     };
 
-    if let Some(scheduler) = SCHEDULER.as_mut() {
+    if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
         scheduler.tasks.push(main_task);
     }
+}
+
+pub fn add_new_user_task(entry_point: u64, user_stack_bottom: u64, stack_size: usize) {
+    unsafe {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
+            let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
+
+            // 1. Allocate Kernel Stack
+            let kernel_stack_bottom = crate::allocator::alloc(stack_size) as u64;
+            let kernel_stack_top = kernel_stack_bottom + stack_size as u64;
+
+            // 2. Setup KernelGsBase
+            let kgs_base = Box::new(crate::syscall::KernelGsBase {
+                kernel_stack: kernel_stack_top,
+                user_stack: user_stack_bottom + stack_size as u64, // Initial user RSP
+                scratch: 0,
+            });
+            let gs_base_ptr = Box::into_raw(kgs_base) as u64;
+
+            // 3. Setup Stack Frame for IRETQ (to enter usermode)
+            // We'll simulate a stack that context_switch can jump into.
+            // When we switch TO this task, context_switch will 'ret' to our entry logic.
+
+            // Let's use a simpler approach:
+            // The task will start at a kernel helper 'user_task_entry'
+
+            let mut sp = kernel_stack_top as *mut u64;
+
+            // Since it's a new task, we need to push the usermode registers
+            // that our syscall/interrupt handler would expect, OR we just
+            // set it up so context_switch 'ret's into a helper that does iretq.
+
+            sp = sp.sub(1);
+            *sp = crate::gdt::USER_DATA_SEL as u64; // SS
+            sp = sp.sub(1);
+            *sp = user_stack_bottom + stack_size as u64; // RSP
+            sp = sp.sub(1);
+            *sp = 0x202; // RFLAGS
+            sp = sp.sub(1);
+            *sp = crate::gdt::USER_CODE_SEL as u64; // CS
+            sp = sp.sub(1);
+            *sp = entry_point; // RIP
+
+            // Now push caller-saved registers that context_switch expects
+            sp = sp.sub(1);
+            *sp = user_task_trampoline as u64; // RIP for context_switch 'ret'
+            sp = sp.sub(1);
+            *sp = 0; // RBP
+            sp = sp.sub(1);
+            *sp = 0; // RBX
+            sp = sp.sub(1);
+            *sp = 0; // R12
+            sp = sp.sub(1);
+            *sp = 0; // R13
+            sp = sp.sub(1);
+            *sp = 0; // R14
+            sp = sp.sub(1);
+            *sp = 0; // R15
+
+            let task = Task {
+                id,
+                stack_top: sp as u64,
+                stack_bottom: user_stack_bottom,
+                status: TaskStatus::Ready,
+                kernel_stack_bottom,
+                gs_base: gs_base_ptr,
+            };
+
+            scheduler.tasks.push(task);
+        }
+    }
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn user_task_trampoline() {
+    core::arch::naked_asm!("swapgs", "iretq");
 }
 
 pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size: usize) {
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
             let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
-
             // 2. Setup Stack Frame for Context Switch
             let stack_top = stack_bottom + stack_size as u64;
 
@@ -96,12 +174,13 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
             sp = sp.sub(1);
             *sp = 0; // r15
 
-            // 3. Create Task Struct
             let task = Task {
                 id,
                 stack_top: sp as u64, // The saved RSP
                 stack_bottom,
                 status: TaskStatus::Ready,
+                kernel_stack_bottom: 0,
+                gs_base: 0,
             };
 
             scheduler.tasks.push(task);
@@ -164,6 +243,12 @@ pub fn switch_task() {
 
             let old_stack_ref = &mut scheduler.tasks[old_index].stack_top as *mut u64;
             let new_stack = scheduler.tasks[next_index].stack_top;
+            let new_gs_base = scheduler.tasks[next_index].gs_base;
+
+            // Update Active GS Base (MSR_GS_BASE)
+            if new_gs_base != 0 {
+                wrmsr(0xC0000101, new_gs_base);
+            }
 
             // Perform the low-level switch
             context_switch(old_stack_ref, new_stack);
@@ -171,9 +256,17 @@ pub fn switch_task() {
     }
 }
 
+unsafe fn wrmsr(msr: u32, value: u64) {
+    let low = value as u32;
+    let high = (value >> 32) as u32;
+    unsafe {
+        asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nomem, nostack, preserves_flags));
+    }
+}
+
 pub fn terminate_task() {
     unsafe {
-        if let Some(scheduler) = SCHEDULER.as_mut() {
+        if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
             let current_index = scheduler.current_task_index;
             scheduler.tasks[current_index].status = TaskStatus::Terminated;
 
@@ -220,7 +313,7 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
 // Helper to get current task id
 pub fn current_task_id() -> usize {
     unsafe {
-        if let Some(scheduler) = SCHEDULER.as_ref() {
+        if let Some(scheduler) = unsafe { SCHEDULER.as_ref() } {
             scheduler.tasks[scheduler.current_task_index].id
         } else {
             0

@@ -1,5 +1,5 @@
-use core::arch::asm;
 use crate::gdt;
+use core::arch::asm;
 
 // MSR Constants
 const MSR_EFER: u32 = 0xC0000080;
@@ -18,11 +18,15 @@ pub struct KernelGsBase {
     pub scratch: u64, // Scratch space if needed
 }
 
-static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
+pub(crate) static mut KERNEL_GS_BASE: KernelGsBase = KernelGsBase {
     kernel_stack: 0,
     user_stack: 0,
     scratch: 0,
 };
+
+pub unsafe fn get_global_gs_base() -> u64 {
+    core::ptr::addr_of_mut!(KERNEL_GS_BASE) as u64
+}
 
 // We need a kernel stack for syscalls.
 // allocating 16KB stack
@@ -37,7 +41,7 @@ pub unsafe fn init() {
         // 2. Setup STAR
         // Kernel Code is 0x08.
         // User Code is 0x20.
-        
+
         let star_val: u64 = ((0x0010 as u64) << 48) | ((gdt::KERNEL_CODE_SEL as u64) << 32);
         wrmsr(MSR_STAR, star_val);
 
@@ -54,10 +58,10 @@ pub unsafe fn init() {
         let stack_ptr = core::ptr::addr_of_mut!(SYSCALL_STACK) as *mut u8;
         // Actually SYSCALL_STACK.len() might borrow. use 16384 directly.
         let stack_end = stack_ptr.add(16384) as u64;
-    
+
         let kgs_base = core::ptr::addr_of_mut!(KERNEL_GS_BASE);
         (*kgs_base).kernel_stack = stack_end;
-        
+
         wrmsr(MSR_KERNEL_GS_BASE, kgs_base as u64);
     }
 }
@@ -83,41 +87,41 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 unsafe extern "C" fn syscall_handler() {
     core::arch::naked_asm!(
         "swapgs",
-        "mov gs:[8], rsp", 
+        "mov gs:[8], rsp",
         "mov rsp, gs:[0]",
-        "push r11", 
-        "push rcx", 
+        "push r11",
+        "push rcx",
         "push rbp",
         "push rbx",
-        "push r12", 
-        "push r13", 
-        "push r14", 
-        "push r15", 
-        
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+
         "push r9", // Save old R9 (Arg 6)
-        
+
         "mov r9, r8",  // Arg 5
         "mov r8, r10", // Arg 4
         "mov rcx, rdx", // Arg 3
         "mov rdx, rsi", // Arg 2
         "mov rsi, rdi", // Arg 1
         "mov rdi, rax", // Syscall ID
-        
+
         "pop rax", // Pop old R9 into RAX temporarily
         "push rax", // Push it as 7th argument (on stack)
-        
+
         "call {dispatcher}",
-        
+
         "add rsp, 8", // Pop argument
-        
+
         "pop r15",
         "pop r14",
         "pop r13",
         "pop r12",
         "pop rbx",
         "pop rbp",
-        "pop rcx", 
-        "pop r11", 
+        "pop rcx",
+        "pop r11",
 
         "mov rsp, gs:[8]",
         "swapgs",
@@ -130,17 +134,17 @@ unsafe extern "C" fn syscall_handler() {
 extern "sysv64" fn syscall_dispatcher_impl(
     id: usize,
     arg1: usize,
-    arg2: usize, 
-    _arg3: usize, 
-    _arg4: usize, 
+    arg2: usize,
+    _arg3: usize,
+    _arg4: usize,
     _arg5: usize,
-    _arg6: usize
+    _arg6: usize,
 ) -> usize {
     match id {
         1 => {
-             // sys_print(ptr, len)
-             sys_print(arg1, arg2);
-             0
+            // sys_print(ptr, len)
+            sys_print(arg1, arg2);
+            0
         }
         2 => {
             // sys_alloc(size)
@@ -152,8 +156,23 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         4 => {
-             // sys_get_key() -> u8 (or 0 if empty)
-             sys_get_key()
+            // sys_get_key() -> u8 (or 0 if empty)
+            sys_get_key()
+        }
+        5 => {
+            // sys_add_task(entry, user_stack)
+            sys_add_task(arg1, arg2);
+            0
+        }
+        6 => {
+            // sys_switch_task()
+            sys_switch_task();
+            0
+        }
+        7 => {
+            // sys_terminate_task()
+            sys_terminate_task();
+            0
         }
         _ => {
             // Unknown syscall
@@ -173,19 +192,25 @@ fn sys_print(ptr: usize, len: usize) {
             crate::print!("{}", s);
             // Debug: Echo to serial port (COM1 0x3F8)
             for b in s.bytes() {
-                unsafe { crate::io::outb(0x3F8, b); }
+                unsafe {
+                    crate::io::outb(0x3F8, b);
+                }
             }
-        },
+        }
         Err(e) => {
-            crate::print!("(sys_print: invalid utf8, ptr={:#x}, len={}, byte={:#x}, err={})", ptr, len, slice[0], e);
+            crate::print!(
+                "(sys_print: invalid utf8, ptr={:#x}, len={}, byte={:#x}, err={})",
+                ptr,
+                len,
+                slice[0],
+                e
+            );
         }
     }
 }
 
 fn sys_alloc(size: usize) -> usize {
-    unsafe {
-        crate::allocator::alloc(size) as usize
-    }
+    unsafe { crate::allocator::alloc(size) as usize }
 }
 
 fn sys_free(ptr: usize) {
@@ -204,8 +229,30 @@ fn sys_get_key() -> usize {
     }
 }
 
+fn sys_add_task(entry: usize, user_stack: usize) {
+    // We assume stack size 16KB for new user tasks
+    let stack_size = 16384;
+    crate::scheduler::add_new_user_task(entry as u64, user_stack as u64, stack_size);
+}
+
+fn sys_switch_task() {
+    crate::scheduler::switch_task();
+}
+
+fn sys_terminate_task() {
+    crate::scheduler::terminate_task();
+}
+
 #[inline(always)]
-unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize, arg6: usize) -> usize {
+unsafe fn syscall(
+    id: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+    arg6: usize,
+) -> usize {
     let ret: usize;
     unsafe {
         asm!(
@@ -218,7 +265,7 @@ unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
             in("r8") arg5,
             in("r9") arg6,
             lateout("rax") ret,
-            lateout("rcx") _, 
+            lateout("rcx") _,
             lateout("r11") _,
             options(nostack, preserves_flags)
         );

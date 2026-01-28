@@ -199,11 +199,50 @@ extern "C" fn task_b() {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    let msg = "Hello from User Mode via Syscall!\n";
+    let msg = "User Task A: Hello! Creating Task B...\n";
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+        // Allocate stack for Task B
+        let stack_b = syscall(2, 16384, 0, 0, 0, 0, 0);
+
+        // Add Task B
+        syscall(5, user_task_b as usize, stack_b, 0, 0, 0, 0);
+
+        loop {
+            let msg2 = "User Task A: Yielding to Task B...\n";
+            syscall(1, msg2.as_ptr() as usize, msg2.len(), 0, 0, 0, 0);
+
+            // Switch Task
+            syscall(6, 0, 0, 0, 0, 0, 0);
+
+            // Delay
+            for _ in 0..10000000 {
+                core::hint::spin_loop();
+            }
+        }
     }
-    loop {}
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "sysv64" fn user_task_b() {
+    let msg = "User Task B: Started! Yielding back to A...\n";
+    unsafe {
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+        loop {
+            let msg2 = "User Task B: Yielding back to A...\n";
+            syscall(1, msg2.as_ptr() as usize, msg2.len(), 0, 0, 0, 0);
+
+            // Switch Task
+            syscall(6, 0, 0, 0, 0, 0, 0);
+
+            // Delay
+            for _ in 0..10000000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
 }
 
 #[inline(always)]
