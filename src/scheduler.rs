@@ -266,7 +266,7 @@ unsafe fn wrmsr(msr: u32, value: u64) {
 
 pub fn terminate_task() {
     unsafe {
-        if let Some(scheduler) = unsafe { SCHEDULER.as_mut() } {
+        if let Some(scheduler) = SCHEDULER.as_mut() {
             let current_index = scheduler.current_task_index;
             scheduler.tasks[current_index].status = TaskStatus::Terminated;
 
@@ -313,7 +313,7 @@ unsafe extern "sysv64" fn context_switch(old_stack_ptr: *mut u64, new_stack_ptr:
 // Helper to get current task id
 pub fn current_task_id() -> usize {
     unsafe {
-        if let Some(scheduler) = unsafe { SCHEDULER.as_ref() } {
+        if let Some(scheduler) = SCHEDULER.as_ref() {
             scheduler.tasks[scheduler.current_task_index].id
         } else {
             0
