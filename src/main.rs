@@ -39,7 +39,7 @@ mod scheduler;
 mod syscall;
 
 mod writer;
-use core::fmt::Write;
+// use core::fmt::Write;
 
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
@@ -105,6 +105,22 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
     unsafe {
         scheduler::init();
+    }
+    let user_stack_frame = allocator
+        .allocate_frame()
+        .expect("Failed to allocate user stack");
+    // Identity mapped, so virtual = physical (checked in memory.rs)
+    // Stack grows down, so top is end of page.
+    let user_top_stack = user_stack_frame + 4096;
+    // Switch to User Mode
+    unsafe {
+        println!("Switching to User Mode...");
+        enter_usermode(user_top_stack);
+    }
+}
+/***
+    unsafe {
+        scheduler::init();
         crate::println!("Scheduler Initialized!");
 
         let stack_size = 4096 * 4;
@@ -124,17 +140,6 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             core::hint::spin_loop();
         }
     }
-
-    // Allocate User Stack
-    // We allocate 1 page for the user stack.
-    let user_stack_frame = allocator
-        .allocate_frame()
-        .expect("Failed to allocate user stack");
-    // Identity mapped, so virtual = physical (checked in memory.rs)
-    // Stack grows down, so top is end of page.
-    let _user_top_stack = user_stack_frame + 4096;
-}
-
 extern "C" fn task_a() {
     loop {
         crate::println!("Task A running");
@@ -154,24 +159,6 @@ extern "C" fn task_b() {
         }
     }
 }
-
-// Commented out User Mode switch for Scheduler testing
-/*
-    // Switch to User Mode
-    unsafe {
-        println!("Switching to User Mode...");
-        enter_usermode(user_top_stack);
-    }
-*/
-
-#[unsafe(no_mangle)]
-pub unsafe extern "sysv64" fn user_main() {
-    let msg = "Hello from User Mode via Syscall!\n";
-    unsafe {
-        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
-    }
-
-    // Test Allocator
     unsafe {
         let size = 128; // 128 bytes
         let ptr = syscall(2, size, 0, 0, 0, 0, 0) as *mut u8;
@@ -206,6 +193,15 @@ pub unsafe extern "sysv64" fn user_main() {
             let fail_msg = "Allocation failed!\n";
             syscall(1, fail_msg.as_ptr() as usize, fail_msg.len(), 0, 0, 0, 0);
         }
+    }
+    test done!
+***/
+
+#[unsafe(no_mangle)]
+pub unsafe extern "sysv64" fn user_main() {
+    let msg = "Hello from User Mode via Syscall!\n";
+    unsafe {
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
     }
     loop {}
 }
