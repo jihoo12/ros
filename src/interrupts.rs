@@ -41,6 +41,10 @@ unsafe extern "C" {
     fn isr29();
     fn isr30();
     fn isr31();
+    
+    // IRQ Handlers
+    fn irq0();
+    fn irq1();
 }
 
 #[derive(Copy, Clone, Default)]
@@ -140,6 +144,10 @@ pub unsafe fn init_idt() {
         set_gate(30, isr30, KERNEL_CODE_SEL, 0x8E);
         set_gate(31, isr31, KERNEL_CODE_SEL, 0x8E);
 
+        // IRQs (start at 32)
+        set_gate(32, irq0, KERNEL_CODE_SEL, 0x8E);
+        set_gate(33, irq1, KERNEL_CODE_SEL, 0x8E);
+
         IDT_PTR.limit = (size_of::<[IdtEntry; 256]>() - 1) as u16;
         IDT_PTR.base = &raw const IDT as *const _ as u64;
 
@@ -220,6 +228,32 @@ pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
+    let frame = unsafe { &*frame };
+    let irq = frame.int_no - 32;
+
+    match irq {
+        0 => {
+            // Timer (TODO)
+        }
+        1 => {
+            // Keyboard
+            unsafe { crate::keyboard::handle_interrupt(); }
+        }
+        _ => {
+            // Create a scope to manage writer lifetime
+            #[allow(static_mut_refs)]
+            // Safety: Global writer access
+            if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+                let _ = writeln!(writer, "Unknown IRQ: {}", irq);
+            }
+        }
+    }
+
+    unsafe { crate::pic::notify_eoi(irq as u8); }
+}
+
 // Assembly stubs
 core::arch::global_asm!(r#"
 .att_syntax
@@ -270,6 +304,57 @@ ISR_NOERR 28
 ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
+
+.macro IRQ n, num
+    .global irq\n
+    irq\n:
+        pushq $0
+        pushq $\num
+        jmp irq_common
+.endm
+
+IRQ 0, 32
+IRQ 1, 33
+
+.global irq_common
+irq_common:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rbp
+    pushq %rdi
+    pushq %rsi
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    movq %rsp, %rdi
+    call irq_handler
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rsi
+    popq %rdi
+    popq %rbp
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    addq $16, %rsp
+    iretq
 
 .global isr_common
 isr_common:

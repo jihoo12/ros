@@ -29,6 +29,10 @@ mod gdt;
 mod memory;
 mod interrupts;
 mod syscall;
+mod allocator;
+mod io;
+mod pic;
+mod keyboard;
 
 mod writer;
 use core::fmt::Write;
@@ -58,12 +62,37 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     unsafe {
         memory::init_paging(boot_info, &mut allocator);
         println!("Paging Initialized!");
+        
+        // Initialize PIC and Interrupts
+        pic::init();
+        // Enable interrupts
+        core::arch::asm!("sti");
+        println!("Interrupts Enabled!");
     }
     
     // Initialize Syscalls
     unsafe {
         syscall::init();
         println!("Syscalls Initialized!");
+    }
+
+    // Initialize Heap
+    // Allocate 128 pages (512KB) for the heap
+    let heap_pages = 128; // 512KB
+    let heap_start = allocator.allocate_frame().expect("Failed to allocate heap start");
+    let mut current_addr = heap_start;
+    
+    // Allocate the rest of the pages and ensure they are contiguous
+    for _ in 1..heap_pages {
+        let next_addr = allocator.allocate_frame().expect("Failed to allocate heap");
+        if next_addr != current_addr + 4096 {
+            panic!("Heap memory allocation failed: memory not contiguous!");
+        }
+        current_addr = next_addr;
+    }
+
+    unsafe {
+        allocator::init(heap_start as usize, (heap_pages * 4096) as usize);
     }
 
     // Allocate User Stack
@@ -87,8 +116,48 @@ pub unsafe extern "sysv64" fn user_main() {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
     }
 
+    // Test Allocator
+    unsafe {
+        let size = 128; // 128 bytes
+        let ptr = syscall(2, size, 0, 0, 0, 0, 0) as *mut u8;
+        
+        if !ptr.is_null() {
+            let success_msg = "Allocated memory successfully!\n";
+            syscall(1, success_msg.as_ptr() as usize, success_msg.len(), 0, 0, 0, 0);
+            
+            // Write to it
+            *ptr = b'A';
+            *ptr.add(1) = b'B';
+            *ptr.add(2) = b'C';
+            *ptr.add(3) = 0; // null terminator if we were using it for C-string
+            
+    // Verify? We can just print saying we wrote to it.
+            let write_msg = "Wrote to allocated memory.\n";
+            syscall(1, write_msg.as_ptr() as usize, write_msg.len(), 0, 0, 0, 0);
+
+            // Free it
+            syscall(3, ptr as usize, 0, 0, 0, 0, 0);
+            let free_msg = "Freed memory.\n";
+            syscall(1, free_msg.as_ptr() as usize, free_msg.len(), 0, 0, 0, 0);
+        } else {
+            let fail_msg = "Allocation failed!\n";
+            syscall(1, fail_msg.as_ptr() as usize, fail_msg.len(), 0, 0, 0, 0);
+        }
+    }
+
+    let msg = "Type something: ";
+    unsafe { syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0); }
+
     loop {
-        // Spin in user mode
+        // Poll for keyboard input
+        unsafe {
+            let c = syscall(4, 0, 0, 0, 0, 0, 0);
+            if c != 0 {
+                // Echo back
+                let char_buf = [c as u8];
+                syscall(1, char_buf.as_ptr() as usize, 1, 0, 0, 0, 0);
+            }
+        }
     }
 }
 

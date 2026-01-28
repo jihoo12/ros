@@ -142,6 +142,19 @@ extern "sysv64" fn syscall_dispatcher_impl(
              sys_print(arg1, arg2);
              0
         }
+        2 => {
+            // sys_alloc(size)
+            sys_alloc(arg1)
+        }
+        3 => {
+            // sys_free(ptr)
+            sys_free(arg1);
+            0
+        }
+        4 => {
+             // sys_get_key() -> u8 (or 0 if empty)
+             sys_get_key()
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -159,6 +172,28 @@ fn sys_print(ptr: usize, len: usize) {
         crate::print!("{}", s);
     } else {
         crate::print!("(sys_print: invalid utf8)");
+    }
+}
+
+fn sys_alloc(size: usize) -> usize {
+    unsafe {
+        crate::allocator::alloc(size) as usize
+    }
+}
+
+fn sys_free(ptr: usize) {
+    unsafe {
+        crate::allocator::free(ptr as *mut u8);
+    }
+}
+
+fn sys_get_key() -> usize {
+    unsafe {
+        if let Some(c) = crate::keyboard::pop_key() {
+            c as usize
+        } else {
+            0
+        }
     }
 }
 
