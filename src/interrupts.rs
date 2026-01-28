@@ -268,12 +268,6 @@ pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
         0 => {
             // Timer (TODO)
         }
-        1 => {
-            // Keyboard
-            unsafe {
-                crate::keyboard::handle_interrupt();
-            }
-        }
         _ => {
             // Create a scope to manage writer lifetime
             #[allow(static_mut_refs)]

@@ -156,20 +156,16 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         4 => {
-            // sys_get_key() -> u8 (or 0 if empty)
-            sys_get_key()
-        }
-        5 => {
             // sys_add_task(entry, user_stack)
             sys_add_task(arg1, arg2);
             0
         }
-        6 => {
+        5 => {
             // sys_switch_task()
             sys_switch_task();
             0
         }
-        7 => {
+        6 => {
             // sys_terminate_task()
             sys_terminate_task();
             0
@@ -216,16 +212,6 @@ fn sys_alloc(size: usize) -> usize {
 fn sys_free(ptr: usize) {
     unsafe {
         crate::allocator::free(ptr as *mut u8);
-    }
-}
-
-fn sys_get_key() -> usize {
-    unsafe {
-        if let Some(c) = crate::keyboard::pop_key() {
-            c as usize
-        } else {
-            0
-        }
     }
 }
 
