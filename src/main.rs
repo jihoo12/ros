@@ -33,12 +33,11 @@ mod gdt;
 mod interrupts;
 mod io;
 mod memory;
+mod pci;
 mod pic;
 mod scheduler;
 mod syscall;
-
 mod writer;
-// use core::fmt::Write;
 
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
@@ -81,6 +80,9 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         syscall::init();
         println!("Syscalls Initialized!");
     }
+
+    // Initialize PCI
+    pci::init();
 
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap

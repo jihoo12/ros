@@ -42,7 +42,7 @@ pub unsafe fn alloc(size: usize) -> *mut u8 {
                 if (*current).size >= size + HEAP_BLOCK_SIZE + 16 {
                     let next_addr = (current as usize) + HEAP_BLOCK_SIZE + size;
                     let next = next_addr as *mut HeapBlock;
-                    
+
                     (*next).size = (*current).size - size - HEAP_BLOCK_SIZE;
                     (*next).next = (*current).next;
                     (*next).prev = current;
@@ -107,10 +107,10 @@ struct KernelAllocator;
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Pass size to our simple allocator
-        alloc(layout.size())
+        unsafe { alloc(layout.size()) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        free(ptr);
+        unsafe { free(ptr) }
     }
 }
 
