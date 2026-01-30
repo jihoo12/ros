@@ -60,12 +60,25 @@ pub struct EventRingSegmentTableEntry {
     pub reserved: [u16; 3],
 }
 
+pub const TRB_COMMAND_COMPLETION_EVENT: u8 = 33;
+pub const TRB_PORT_STATUS_CHANGE_EVENT: u8 = 34;
+
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Trb {
     pub param: u64,
     pub status: u32,
     pub control: u32,
+}
+
+impl Trb {
+    pub fn trb_type(&self) -> u8 {
+        ((self.control >> 10) & 0x3F) as u8
+    }
+
+    pub fn cycle_bit(&self) -> bool {
+        (self.control & 1) != 0
+    }
 }
 
 pub struct CommandRing {
@@ -80,6 +93,10 @@ pub struct XhciContext {
     pub op: *mut XhciOperationalRegisters,
     pub rt: *mut XhciRuntimeRegisters,
     pub cmd_ring: CommandRing,
+    pub event_ring_base: *mut Trb,
+    pub event_ring_size: usize,
+    pub event_ring_dequeue_index: usize,
+    pub event_ring_cycle_bit: bool,
     pub max_ports: u8,
 }
 
@@ -213,6 +230,10 @@ pub unsafe fn init(device: PciDevice) {
             op,
             rt,
             cmd_ring,
+            event_ring_base: event_ring_base as *mut Trb,
+            event_ring_size: (4096 / 16),
+            event_ring_dequeue_index: 0,
+            event_ring_cycle_bit: true,
             max_ports,
         });
     }
@@ -229,16 +250,52 @@ pub unsafe fn poll_ports() {
     let op = ctx.op;
     let max_ports = ctx.max_ports;
 
-    // PORTSC registers start at offset 0x400 from OP base (usually, but let's check CAP)
-    // Actually, offset is 0x400 + (port_num - 1) * 0x10
     println!("xHCI: Polling {} ports...", max_ports);
 
     for i in 0..max_ports {
         let portsc_ptr = (op as usize + 0x400 + (i as usize * 0x10)) as *mut u32;
         let portsc = unsafe { read_volatile(portsc_ptr) };
         if (portsc & 1) != 0 {
-            // CCS: Current Connect Status
             println!("xHCI: Device detected on port {}", i + 1);
         }
+    }
+}
+
+pub unsafe fn process_events() {
+    let ctx = unsafe {
+        (*core::ptr::addr_of_mut!(XHCI_CTX))
+            .as_mut()
+            .expect("xHCI not initialized")
+    };
+    let rt = ctx.rt;
+    let ir0 = unsafe { &mut (*rt).ir[0] };
+
+    loop {
+        let trb_ptr = unsafe { ctx.event_ring_base.add(ctx.event_ring_dequeue_index) };
+        let trb = unsafe { read_volatile(trb_ptr) };
+
+        if trb.cycle_bit() != ctx.event_ring_cycle_bit {
+            break;
+        }
+
+        let trb_type = trb.trb_type();
+        if trb_type == TRB_PORT_STATUS_CHANGE_EVENT {
+            let port_id = ((trb.param >> 24) & 0xFF) as u8;
+            println!("xHCI: Event: Port Status Change on port {}", port_id);
+        } else if trb_type == TRB_COMMAND_COMPLETION_EVENT {
+            println!("xHCI: Event: Command Completion");
+        } else {
+            println!("xHCI: Event: Unknown TRB type {}", trb_type);
+        }
+
+        ctx.event_ring_dequeue_index += 1;
+        if ctx.event_ring_dequeue_index >= ctx.event_ring_size {
+            ctx.event_ring_dequeue_index = 0;
+            ctx.event_ring_cycle_bit = !ctx.event_ring_cycle_bit;
+        }
+
+        let dequeue_ptr =
+            unsafe { (ctx.event_ring_base.add(ctx.event_ring_dequeue_index) as u64) | 0x8 };
+        unsafe { write_volatile(&mut ir0.erdp, dequeue_ptr) };
     }
 }

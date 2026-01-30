@@ -178,6 +178,13 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_nvme_write(nsid, lba, ptr, count)
             sys_nvme_write(arg1, arg2, arg3, arg4) as usize
         }
+        9 => {
+            // sys_xhci_poll()
+            unsafe {
+                crate::xhci::process_events();
+            }
+            0
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);

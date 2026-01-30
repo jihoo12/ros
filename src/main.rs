@@ -177,9 +177,14 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    let msg = "User Task A: Hello!\n";
+    let msg = "User Task A: Hello! Polling xHCI events...\n";
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+    }
+    loop {
+        unsafe {
+            syscall(9, 0, 0, 0, 0, 0, 0);
+        }
     }
 }
 
