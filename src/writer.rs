@@ -18,7 +18,7 @@ pub struct Writer {
     y_pos: usize,
 }
 //choose my favorite image
-static IMAGE_DATA: &[u8] = include_bytes!("../image.bin");
+//static IMAGE_DATA: &[u8] = include_bytes!("../image.bin");
 impl Writer {
     pub fn new(info: BootInfo) -> self::Writer {
         Self {
@@ -98,6 +98,7 @@ impl Writer {
         self.x_pos = 0;
         self.y_pos = 0;
     }
+    /***
     //test draw image
     pub fn draw_embedded_image(&mut self, x_pos: usize, y_pos: usize, width: usize, height: usize) {
         // u8 배열을 u32(픽셀) 포인터로 해석
@@ -110,6 +111,7 @@ impl Writer {
             }
         }
     }
+    ***/
 }
 
 impl fmt::Write for Writer {
@@ -141,6 +143,7 @@ macro_rules! println {
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
 
+/***
 pub fn draw_image(x: usize, y: usize, w: usize, h: usize) {
     unsafe {
         #[allow(static_mut_refs)]
@@ -149,3 +152,4 @@ pub fn draw_image(x: usize, y: usize, w: usize, h: usize) {
         }
     }
 }
+***/

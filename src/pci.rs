@@ -8,6 +8,10 @@ pub const PCI_CLASS_STORAGE: u8 = 0x01;
 pub const PCI_SUBCLASS_NVME: u8 = 0x08;
 pub const PCI_PROG_IF_NVME: u8 = 0x02;
 
+pub const PCI_CLASS_SERIAL_BUS: u8 = 0x0C;
+pub const PCI_SUBCLASS_USB: u8 = 0x03;
+pub const PCI_PROG_IF_XHCI: u8 = 0x30;
+
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
     pub bus: u8,
@@ -20,6 +24,7 @@ pub struct PciDevice {
 }
 
 static mut NVME_DEVICE: Option<PciDevice> = None;
+static mut XHCI_DEVICE: Option<PciDevice> = None;
 
 pub fn init() {
     unsafe {
@@ -29,6 +34,10 @@ pub fn init() {
 
 pub fn get_nvme_device() -> Option<PciDevice> {
     unsafe { NVME_DEVICE }
+}
+
+pub fn get_xhci_device() -> Option<PciDevice> {
+    unsafe { XHCI_DEVICE }
 }
 
 unsafe fn scan_bus() {
@@ -64,16 +73,24 @@ unsafe fn check_device(bus: u8, dev: u8) {
 }
 
 unsafe fn check_function(bus: u8, dev: u8, func: u8) {
+    let vendor_id = unsafe { read_config_16(bus, dev, func, 0x00) };
+    if vendor_id == 0xFFFF {
+        return;
+    }
+    let device_id = unsafe { read_config_16(bus, dev, func, 0x02) };
     let class_code = unsafe { read_config_8(bus, dev, func, 0x0B) };
     let sub_class = unsafe { read_config_8(bus, dev, func, 0x0A) };
     let prog_if = unsafe { read_config_8(bus, dev, func, 0x09) };
+
+    println!(
+        "PCI: Checking {}:{}:{} Vendor={:#04x} Device={:#04x} Class={:02x}:{:02x}:{:02x}",
+        bus, dev, func, vendor_id, device_id, class_code, sub_class, prog_if
+    );
 
     if class_code == PCI_CLASS_STORAGE
         && sub_class == PCI_SUBCLASS_NVME
         && prog_if == PCI_PROG_IF_NVME
     {
-        let vendor_id = unsafe { read_config_16(bus, dev, func, 0x00) };
-        let device_id = unsafe { read_config_16(bus, dev, func, 0x02) };
         let bar0 = unsafe { read_config_32(bus, dev, func, 0x10) };
         let bar1 = unsafe { read_config_32(bus, dev, func, 0x14) };
 
@@ -91,6 +108,38 @@ unsafe fn check_function(bus: u8, dev: u8, func: u8) {
             NVME_DEVICE = Some(device);
         }
         println!("PCI: Found NVMe Controller at {}:{}:{}", bus, dev, func);
+        println!(
+            "Vendor ID: {:#04x}, Device ID: {:#04x}",
+            vendor_id, device_id
+        );
+
+        // Enable Bus Master and Memory Space in Command Register (Offset 0x04)
+        let mut cmd = unsafe { read_config_16(bus, dev, func, 0x04) };
+        cmd |= 0x0006; // Bit 1: Memory Space, Bit 2: Bus Master
+        unsafe {
+            write_config_32(bus, dev, func, 0x04, cmd as u32);
+        }
+    } else if class_code == PCI_CLASS_SERIAL_BUS
+        && sub_class == PCI_SUBCLASS_USB
+        && prog_if == PCI_PROG_IF_XHCI
+    {
+        let bar0 = unsafe { read_config_32(bus, dev, func, 0x10) };
+        let bar1 = unsafe { read_config_32(bus, dev, func, 0x14) };
+
+        let device = PciDevice {
+            bus,
+            device: dev,
+            function: func,
+            vendor_id,
+            device_id,
+            bar0,
+            bar1,
+        };
+
+        unsafe {
+            XHCI_DEVICE = Some(device);
+        }
+        println!("PCI: Found xHCI Controller at {}:{}:{}", bus, dev, func);
         println!(
             "Vendor ID: {:#04x}, Device ID: {:#04x}",
             vendor_id, device_id

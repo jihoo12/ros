@@ -39,6 +39,7 @@ mod pic;
 mod scheduler;
 mod syscall;
 mod writer;
+mod xhci;
 
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
@@ -114,6 +115,29 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     } else {
         println!("No NVMe device found!");
     }
+    if let Some(device) = pci::get_xhci_device() {
+        println!("find xHCI device\n");
+        unsafe {
+            let pml4 = memory::get_table_mut(pml4_phys);
+            let mut xhci_base_phys = (device.bar0 as u64) & 0xFFFFFFF0;
+            let bar_type = (device.bar0 >> 1) & 0x3;
+
+            if bar_type == 2 {
+                // 64-bit address
+                xhci_base_phys |= (device.bar1 as u64) << 32;
+            }
+            let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_CACHE_DISABLE;
+            for i in 0..16 {
+                let offset = i * 4096;
+                let phys = xhci_base_phys + offset;
+                memory::map_page(pml4, phys, phys, flags, &mut allocator);
+            }
+
+            xhci::init(device);
+        }
+    } else {
+        println!("failed to find xHCI device\n")
+    }
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap
     let heap_pages = 128; // 512KB
@@ -146,24 +170,17 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Switch to User Mode
     unsafe {
         println!("Switching to User Mode...");
-        writer::draw_image(100, 100, 500, 500);
+        //writer::draw_image(100, 100, 500, 500);
         enter_usermode(user_top_stack);
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    /***
     let msg = "User Task A: Hello!\n";
-    let msg2 = "Wakamo is my wife!\n";
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
-        syscall(1, msg2.as_ptr() as usize, msg2.len(), 0, 0, 0, 0);
-
-        // Test NVMe Write via Syscall
     }
-    ***/
-    loop {}
 }
 
 #[inline(always)]
