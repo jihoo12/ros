@@ -30,6 +30,14 @@ impl Writer {
     }
 
     pub fn write_char(&mut self, c: char) {
+        // Echo to serial port (COM1 0x3F8)
+        unsafe {
+            crate::io::outb(0x3F8, c as u8);
+            if c == '\n' {
+                crate::io::outb(0x3F8, b'\r');
+            }
+        }
+
         match c {
             '\n' => self.new_line(),
             c => {

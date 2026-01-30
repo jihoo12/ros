@@ -10,5 +10,7 @@ qemu-system-x86_64 \
     -drive format=raw,file=fat:rw:esp \
     -drive file=nvme.img,if=none,id=nvm \
     -device nvme,serial=deadbeef,drive=nvm \
-    -device qemu-xhci \
-    -net none
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,bus=xhci.0 \
+    -net none \
+    -serial stdio
