@@ -53,6 +53,13 @@ pub struct XhciInterrupterRegisterSet {
     pub erdp: u64,   // Event Ring Dequeue Pointer
 }
 
+#[repr(C)]
+pub struct EventRingSegmentTableEntry {
+    pub base_address: u64,
+    pub size: u16,
+    pub reserved: [u16; 3],
+}
+
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Trb {
@@ -73,13 +80,18 @@ pub struct XhciContext {
     pub op: *mut XhciOperationalRegisters,
     pub rt: *mut XhciRuntimeRegisters,
     pub cmd_ring: CommandRing,
+    pub max_ports: u8,
 }
 
 static mut XHCI_CTX: Option<XhciContext> = None;
 
 #[repr(align(4096))]
 struct AlignedPage([u8; 4096]);
+
 static mut COMMAND_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+static mut DCBAA_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+static mut EVENT_RING_SEGMENT_TABLE: AlignedPage = AlignedPage([0; 4096]);
+static mut EVENT_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 
 pub unsafe fn init(device: PciDevice) {
     println!("xHCI: Initializing...");
@@ -151,12 +163,82 @@ pub unsafe fn init(device: PciDevice) {
         cmd_ring_base as u64
     );
 
+    // 5. DCBAA Setup
+    println!("xHCI: Setting up DCBAA...");
+    let dcbaa_base = core::ptr::addr_of_mut!(DCBAA_BUFFER).cast::<u64>();
+    unsafe { core::ptr::write_bytes(dcbaa_base, 0, 4096) };
+    unsafe { write_volatile(&mut (*op).dcbaap, dcbaa_base as u64) };
+
+    // 6. Event Ring Setup (Interrupter 0)
+    println!("xHCI: Setting up event ring...");
+    let erst_base =
+        core::ptr::addr_of_mut!(EVENT_RING_SEGMENT_TABLE).cast::<EventRingSegmentTableEntry>();
+    let event_ring_base = core::ptr::addr_of_mut!(EVENT_RING_BUFFER).cast::<u8>();
+
+    unsafe {
+        core::ptr::write_bytes(erst_base, 0, 4096);
+        core::ptr::write_bytes(event_ring_base, 0, 4096);
+    }
+
+    let erst_entry = unsafe { &mut *erst_base };
+    erst_entry.base_address = event_ring_base as u64;
+    erst_entry.size = (4096 / 16) as u16; // 16 bytes per TRB
+
+    let ir0 = unsafe { &mut (*rt).ir[0] };
+    unsafe {
+        write_volatile(&mut ir0.erstsz, 1);
+        write_volatile(&mut ir0.erstba, erst_base as u64);
+        write_volatile(&mut ir0.erdp, event_ring_base as u64);
+    }
+
+    // 7. Start Controller
+    println!("xHCI: Starting controller...");
+    let mut usbcmd = unsafe { read_volatile(&(*op).usbcmd) };
+    usbcmd |= 1; // RS: Run/Stop = 1
+    unsafe { write_volatile(&mut (*op).usbcmd, usbcmd) };
+
+    while (unsafe { read_volatile(&(*op).usbsts) } & 1) != 0 {
+        // Wait for HCH (Host Controller Halted) to become 0
+        core::hint::spin_loop();
+        break; // In QEMU it might be immediate or we need to be careful with loops
+    }
+    println!("xHCI: Controller started");
+
+    let max_ports = (hcsparams1 >> 24) as u8;
+    println!("xHCI: Max ports: {}", max_ports);
+
     unsafe {
         XHCI_CTX = Some(XhciContext {
             cap,
             op,
             rt,
             cmd_ring,
+            max_ports,
         });
+    }
+
+    unsafe { poll_ports() };
+}
+
+pub unsafe fn poll_ports() {
+    let ctx = unsafe {
+        (*core::ptr::addr_of!(XHCI_CTX))
+            .as_ref()
+            .expect("xHCI not initialized")
+    };
+    let op = ctx.op;
+    let max_ports = ctx.max_ports;
+
+    // PORTSC registers start at offset 0x400 from OP base (usually, but let's check CAP)
+    // Actually, offset is 0x400 + (port_num - 1) * 0x10
+    println!("xHCI: Polling {} ports...", max_ports);
+
+    for i in 0..max_ports {
+        let portsc_ptr = (op as usize + 0x400 + (i as usize * 0x10)) as *mut u32;
+        let portsc = unsafe { read_volatile(portsc_ptr) };
+        if (portsc & 1) != 0 {
+            // CCS: Current Connect Status
+            println!("xHCI: Device detected on port {}", i + 1);
+        }
     }
 }
