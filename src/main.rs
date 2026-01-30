@@ -111,6 +111,34 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             }
 
             nvme::init(device);
+
+            // Test NVMe Write
+            println!("Testing NVMe Write...");
+            let msg = b"Hello NVMe World!";
+            let mut write_buf = [0u8; 512];
+            for (i, &b) in msg.iter().enumerate() {
+                write_buf[i] = b;
+            }
+            nvme::nvme_write(1, 0, write_buf.as_mut_ptr(), 1);
+            println!("Write completed.");
+
+            // Test NVMe Read
+            println!("Testing NVMe Read...");
+            let mut read_buf = [0u8; 512];
+            nvme::nvme_read(1, 0, read_buf.as_mut_ptr(), 1);
+            println!("Read completed.");
+
+            // Verify
+            if let Ok(s) = core::str::from_utf8(&read_buf[..msg.len()]) {
+                println!("Read Data: {}", s);
+                if s == "Hello NVMe World!" {
+                    println!("NVMe Read/Write Test PASSED!");
+                } else {
+                    println!("NVMe Read/Write Test FAILED: Content mismatch");
+                }
+            } else {
+                println!("NVMe Read/Write Test FAILED: Invalid UTF-8");
+            }
         }
     } else {
         println!("No NVMe device found!");
