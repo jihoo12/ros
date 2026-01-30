@@ -95,4 +95,69 @@ pub unsafe extern "sysv64" fn user_task_b() {
         }
     }
 }
+                // Test NVMe Write
+            println!("Testing NVMe Write...");
+            let msg = b"Hello NVMe World!";
+            let mut write_buf = [0u8; 512];
+            for (i, &b) in msg.iter().enumerate() {
+                write_buf[i] = b;
+            }
+            nvme::nvme_write(1, 0, write_buf.as_mut_ptr(), 1);
+            println!("Write completed.");
+
+            // Test NVMe Read
+            println!("Testing NVMe Read...");
+            let mut read_buf = [0u8; 512];
+            nvme::nvme_read(1, 0, read_buf.as_mut_ptr(), 1);
+            println!("Read completed.");
+
+            // Verify
+            if let Ok(s) = core::str::from_utf8(&read_buf[..msg.len()]) {
+                println!("Read Data: {}", s);
+                if s == "Hello NVMe World!" {
+                    println!("NVMe Read/Write Test PASSED!");
+                } else {
+                    println!("NVMe Read/Write Test FAILED: Content mismatch");
+                }
+            } else {
+                println!("NVMe Read/Write Test FAILED: Invalid UTF-8");
+            }
+            let write_msg = b"Hello from User Mode via Syscall!";
+        let mut write_buf = [0u8; 512];
+        for (i, &b) in write_msg.iter().enumerate() {
+            write_buf[i] = b;
+        }
+
+        let msg = "User: Writing to NVMe...\n";
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+        // Syscall 8: NVMe Write (nsid=1, lba=10, buf, count=1)
+        syscall(8, 1, 10, write_buf.as_mut_ptr() as usize, 1, 0, 0);
+
+        let msg = "User: Reading from NVMe...\n";
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+        // Test NVMe Read via Syscall
+        let mut read_buf = [0u8; 512];
+        // Syscall 7: NVMe Read (nsid=1, lba=10, buf, count=1)
+        syscall(7, 1, 10, read_buf.as_mut_ptr() as usize, 1, 0, 0);
+
+        let msg = "User: Read complete. Verifying...\n";
+        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+        // Verify
+        if let Ok(s) = core::str::from_utf8(&read_buf[..write_msg.len()]) {
+            if s == "Hello from User Mode via Syscall!" {
+                let msg = "User: NVMe Test PASSED!\n";
+                syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+            } else {
+                let msg = "User: NVMe Test FAILED: Content Mismatch\n";
+                syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+
+                // Optionally print what we got (not easily doable with simple syscall(1) unless we implement a user-mode formatted print or just dump char by char)
+            }
+        } else {
+            let msg = "User: NVMe Test FAILED: Invalid UTF-8\n";
+            syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+        }
 ***/

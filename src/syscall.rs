@@ -135,8 +135,8 @@ extern "sysv64" fn syscall_dispatcher_impl(
     id: usize,
     arg1: usize,
     arg2: usize,
-    _arg3: usize,
-    _arg4: usize,
+    arg3: usize,
+    arg4: usize,
     _arg5: usize,
     _arg6: usize,
 ) -> usize {
@@ -169,6 +169,14 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_terminate_task()
             sys_terminate_task();
             0
+        }
+        7 => {
+            // sys_nvme_read(nsid, lba, ptr, count)
+            sys_nvme_read(arg1, arg2, arg3, arg4) as usize
+        }
+        8 => {
+            // sys_nvme_write(nsid, lba, ptr, count)
+            sys_nvme_write(arg1, arg2, arg3, arg4) as usize
         }
         _ => {
             // Unknown syscall
@@ -227,6 +235,18 @@ fn sys_switch_task() {
 
 fn sys_terminate_task() {
     crate::scheduler::terminate_task();
+}
+
+fn sys_nvme_read(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
+    let buf = ptr as *mut u8;
+    // Basic verification - ensure ptr is in user range?
+    // For now we trust it or let it page fault if invalid.
+    unsafe { crate::nvme::nvme_read(nsid as u32, lba as u64, buf, count as u32) }
+}
+
+fn sys_nvme_write(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
+    let buf = ptr as *mut u8;
+    unsafe { crate::nvme::nvme_write(nsid as u32, lba as u64, buf, count as u32) }
 }
 
 #[inline(always)]
