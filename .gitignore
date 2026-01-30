@@ -5,3 +5,6 @@ nvme.h
 pci.c
 pci.h
 nvme.img
+image.bin
+wakamo1.jpg
+.venv

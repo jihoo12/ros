@@ -54,7 +54,6 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         boot_info.horizontal_resolution, boot_info.vertical_resolution
     );
     println!("Framebuffer: {:#x}", boot_info.framebuffer_base);
-
     // Initialize Frame Allocator
     let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
 
@@ -115,7 +114,6 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     } else {
         println!("No NVMe device found!");
     }
-
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap
     let heap_pages = 128; // 512KB
@@ -148,18 +146,24 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Switch to User Mode
     unsafe {
         println!("Switching to User Mode...");
+        writer::draw_image(100, 100, 500, 500);
         enter_usermode(user_top_stack);
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
+    /***
     let msg = "User Task A: Hello!\n";
+    let msg2 = "Wakamo is my wife!\n";
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
+        syscall(1, msg2.as_ptr() as usize, msg2.len(), 0, 0, 0, 0);
 
         // Test NVMe Write via Syscall
     }
+    ***/
+    loop {}
 }
 
 #[inline(always)]

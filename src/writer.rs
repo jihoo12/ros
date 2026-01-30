@@ -1,7 +1,7 @@
 use super::BootInfo;
 use core::fmt;
-use font8x8::{UnicodeFonts, BASIC_FONTS};
 use core::fmt::Write;
+use font8x8::{BASIC_FONTS, UnicodeFonts};
 
 pub static mut GLOBAL_WRITER: Option<Writer> = None;
 
@@ -17,7 +17,8 @@ pub struct Writer {
     x_pos: usize,
     y_pos: usize,
 }
-
+//choose my favorite image
+static IMAGE_DATA: &[u8] = include_bytes!("../image.bin");
 impl Writer {
     pub fn new(info: BootInfo) -> self::Writer {
         Self {
@@ -39,7 +40,7 @@ impl Writer {
                     self.clear_screen(); // Simple scrolling: clear and reset. Better: scroll up.
                     self.y_pos = 0;
                 }
-                
+
                 let bitmap = match BASIC_FONTS.get(c) {
                     Some(bitmap) => bitmap,
                     None => return, // Unknown char
@@ -59,24 +60,26 @@ impl Writer {
                 } {
                     self.write_pixel(self.x_pos + x, self.y_pos + y, 0xFFFFFFFF); // White
                 } else {
-                     self.write_pixel(self.x_pos + x, self.y_pos + y, 0x00000000); // Black background
+                    self.write_pixel(self.x_pos + x, self.y_pos + y, 0x00000000); // Black background
                 }
             }
         }
     }
 
     fn write_pixel(&mut self, x: usize, y: usize, color: u32) {
-         if x >= self.info.horizontal_resolution as usize || y >= self.info.vertical_resolution as usize {
-             return;
-         }
-         
-         let pixel_offset = y * self.info.pixels_per_scanline as usize + x;
-         // Assume 4 bytes per pixel (BGR or RGB Reserved) for typical UEFI GOP 32ppp
-         // BootInfo.pixel_format should be checked, but we assume default for now.
-         let ptr = self.framebuffer as *mut u32;
-         unsafe {
-             *ptr.add(pixel_offset) = color;
-         }
+        if x >= self.info.horizontal_resolution as usize
+            || y >= self.info.vertical_resolution as usize
+        {
+            return;
+        }
+
+        let pixel_offset = y * self.info.pixels_per_scanline as usize + x;
+        // Assume 4 bytes per pixel (BGR or RGB Reserved) for typical UEFI GOP 32ppp
+        // BootInfo.pixel_format should be checked, but we assume default for now.
+        let ptr = self.framebuffer as *mut u32;
+        unsafe {
+            *ptr.add(pixel_offset) = color;
+        }
     }
 
     fn new_line(&mut self) {
@@ -87,13 +90,25 @@ impl Writer {
     }
 
     fn clear_screen(&mut self) {
-         for y in 0..self.info.vertical_resolution {
-             for x in 0..self.info.horizontal_resolution {
-                 self.write_pixel(x as usize, y as usize, 0);
-             }
-         }
-         self.x_pos = 0;
-         self.y_pos = 0;
+        for y in 0..self.info.vertical_resolution {
+            for x in 0..self.info.horizontal_resolution {
+                self.write_pixel(x as usize, y as usize, 0);
+            }
+        }
+        self.x_pos = 0;
+        self.y_pos = 0;
+    }
+    //test draw image
+    pub fn draw_embedded_image(&mut self, x_pos: usize, y_pos: usize, width: usize, height: usize) {
+        // u8 배열을 u32(픽셀) 포인터로 해석
+        let pixel_ptr = IMAGE_DATA.as_ptr() as *const u32;
+
+        for y in 0..height {
+            for x in 0..width {
+                let color = unsafe { *pixel_ptr.add(y * width + x) };
+                self.write_pixel(x_pos + x, y_pos + y, color);
+            }
+        }
     }
 }
 
@@ -124,4 +139,13 @@ macro_rules! print {
 macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+pub fn draw_image(x: usize, y: usize, w: usize, h: usize) {
+    unsafe {
+        #[allow(static_mut_refs)]
+        if let Some(writer) = GLOBAL_WRITER.as_mut() {
+            writer.draw_embedded_image(x, y, w, h);
+        }
+    }
 }
