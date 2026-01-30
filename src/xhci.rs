@@ -53,13 +53,33 @@ pub struct XhciInterrupterRegisterSet {
     pub erdp: u64,   // Event Ring Dequeue Pointer
 }
 
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Trb {
+    pub param: u64,
+    pub status: u32,
+    pub control: u32,
+}
+
+pub struct CommandRing {
+    pub base: *mut Trb,
+    pub size: usize,
+    pub enqueue_index: usize,
+    pub cycle_bit: bool,
+}
+
 pub struct XhciContext {
     pub cap: *const XhciCapabilityRegisters,
     pub op: *mut XhciOperationalRegisters,
     pub rt: *mut XhciRuntimeRegisters,
+    pub cmd_ring: CommandRing,
 }
 
 static mut XHCI_CTX: Option<XhciContext> = None;
+
+#[repr(align(4096))]
+struct AlignedPage([u8; 4096]);
+static mut COMMAND_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 
 pub unsafe fn init(device: PciDevice) {
     println!("xHCI: Initializing...");
@@ -109,7 +129,34 @@ pub unsafe fn init(device: PciDevice) {
     config |= max_slots;
     unsafe { write_volatile(&mut (*op).config, config) };
 
+    // 4. Command Ring Setup
+    println!("xHCI: Setting up command ring...");
+    let cmd_ring_base = core::ptr::addr_of_mut!(COMMAND_RING_BUFFER).cast::<Trb>();
+    let cmd_ring_size = 4096 / core::mem::size_of::<Trb>();
+
+    // Clear buffer
+    unsafe { core::ptr::write_bytes(cmd_ring_base, 0, cmd_ring_size) };
+
+    let cmd_ring = CommandRing {
+        base: cmd_ring_base,
+        size: cmd_ring_size,
+        enqueue_index: 0,
+        cycle_bit: true,
+    };
+
+    let crcr = (cmd_ring_base as u64) | 1; // Bit 0: RCS (Ring Cycle State) = 1
+    unsafe { write_volatile(&mut (*op).crcr, crcr) };
+    println!(
+        "xHCI: Command ring configured at {:#x}",
+        cmd_ring_base as u64
+    );
+
     unsafe {
-        XHCI_CTX = Some(XhciContext { cap, op, rt });
+        XHCI_CTX = Some(XhciContext {
+            cap,
+            op,
+            rt,
+            cmd_ring,
+        });
     }
 }
