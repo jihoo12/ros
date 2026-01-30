@@ -33,6 +33,7 @@ mod gdt;
 mod interrupts;
 mod io;
 mod memory;
+mod nvme;
 mod pci;
 mod pic;
 mod scheduler;
@@ -64,8 +65,8 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         println!("GDT & IDT Initialized!");
     }
 
+    let pml4_phys = unsafe { memory::init_paging(boot_info, &mut allocator) };
     unsafe {
-        memory::init_paging(boot_info, &mut allocator);
         println!("Paging Initialized!");
 
         // Initialize PIC and Interrupts
@@ -83,6 +84,37 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
     // Initialize PCI
     pci::init();
+
+    // Initialize NVMe
+    if let Some(device) = pci::get_nvme_device() {
+        unsafe {
+            // Identity map the BAR0 MMIO region
+            let pml4 = memory::get_table_mut(pml4_phys);
+
+            let mut bar = (device.bar0 as u64) & 0xFFFFFFF0;
+            if device.bar1 != 0 {
+                bar |= (device.bar1 as u64) << 32;
+            }
+
+            println!("Mapping NVMe BAR at {:#x}", bar);
+
+            // Map 16KB (4 pages)
+            let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT; // Kernel only, or User? Let's keep it minimal.
+            // Usually drivers run in kernel, so no PAGE_USER needed unless we access from user ring (which we shouldn't directly)
+            // But map_page logic uses OR for user? No, flags argument is used.
+            // memory.rs map_page signature: flags.
+
+            for i in 0..4 {
+                let offset = i * 4096;
+                let addr = bar + offset;
+                memory::map_page(pml4, addr, addr, flags, &mut allocator);
+            }
+
+            nvme::init(device);
+        }
+    } else {
+        println!("No NVMe device found!");
+    }
 
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap

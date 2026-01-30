@@ -1,6 +1,5 @@
-
-use crate::uefi::{EFI_MEMORY_DESCRIPTOR, EFI_CONVENTIONAL_MEMORY};
 use crate::BootInfo;
+use crate::uefi::{EFI_CONVENTIONAL_MEMORY, EFI_MEMORY_DESCRIPTOR};
 use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -16,7 +15,7 @@ pub struct FrameAllocator {
     memory_map_size: usize,
     pub descriptor_size: usize,
     pub descriptor_version: u32,
-    
+
     current_descriptor_index: usize,
     current_page_offset: u64,
 }
@@ -41,12 +40,14 @@ impl FrameAllocator {
         while self.current_descriptor_index < num_descriptors {
             let offset = self.current_descriptor_index * self.descriptor_size;
             // SAFE: We are within bounds derived from map size
-            let descriptor_ptr = unsafe { self.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
+            let descriptor_ptr =
+                unsafe { self.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
             let descriptor = unsafe { &*descriptor_ptr };
 
             if descriptor.Type == EFI_CONVENTIONAL_MEMORY {
                 if self.current_page_offset < descriptor.NumberOfPages {
-                    let frame_address = descriptor.PhysicalStart + (self.current_page_offset * PAGE_SIZE);
+                    let frame_address =
+                        descriptor.PhysicalStart + (self.current_page_offset * PAGE_SIZE);
                     self.current_page_offset += 1;
                     if frame_address > 0 {
                         return Some(frame_address);
@@ -74,7 +75,7 @@ impl PageTable {
 }
 
 /// Helper to get a mutable reference to a PageTable from a physical address.
-unsafe fn get_table_mut(phys_addr: u64) -> &'static mut PageTable {
+pub unsafe fn get_table_mut(phys_addr: u64) -> &'static mut PageTable {
     unsafe { &mut *(phys_addr as *mut PageTable) }
 }
 
@@ -84,7 +85,7 @@ pub unsafe fn map_page(
     virt_addr: u64,
     phys_addr: u64,
     flags: u64,
-    allocator: &mut FrameAllocator
+    allocator: &mut FrameAllocator,
 ) {
     let pml4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
     let pdp_idx = ((virt_addr >> 30) & 0x1FF) as usize;
@@ -133,32 +134,33 @@ pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) 
 
     // 2. Identity Map Regions
     let num_descriptors = allocator.memory_map_size / allocator.descriptor_size;
-    
-    for i in 0..num_descriptors {
-         let offset = i * allocator.descriptor_size;
-         let descriptor_ptr = unsafe { allocator.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
-         let descriptor = unsafe { &*descriptor_ptr };
 
-         match descriptor.Type {
-            crate::uefi::EFI_CONVENTIONAL_MEMORY | 
-            crate::uefi::EFI_LOADER_CODE | 
-            crate::uefi::EFI_LOADER_DATA |
-            crate::uefi::EFI_BOOT_SERVICES_CODE |
-            crate::uefi::EFI_BOOT_SERVICES_DATA |
-            crate::uefi::EFI_RUNTIME_SERVICES_CODE |
-            crate::uefi::EFI_RUNTIME_SERVICES_DATA | 
-            crate::uefi::EFI_ACPI_RECLAIM_MEMORY |
-            crate::uefi::EFI_ACPI_MEMORY_NVS |
-            crate::uefi::EFI_MEMORY_MAPPED_IO |
-            crate::uefi::EFI_MEMORY_MAPPED_IO_PORT_SPACE => {
+    for i in 0..num_descriptors {
+        let offset = i * allocator.descriptor_size;
+        let descriptor_ptr =
+            unsafe { allocator.memory_map.add(offset) } as *const EFI_MEMORY_DESCRIPTOR;
+        let descriptor = unsafe { &*descriptor_ptr };
+
+        match descriptor.Type {
+            crate::uefi::EFI_CONVENTIONAL_MEMORY
+            | crate::uefi::EFI_LOADER_CODE
+            | crate::uefi::EFI_LOADER_DATA
+            | crate::uefi::EFI_BOOT_SERVICES_CODE
+            | crate::uefi::EFI_BOOT_SERVICES_DATA
+            | crate::uefi::EFI_RUNTIME_SERVICES_CODE
+            | crate::uefi::EFI_RUNTIME_SERVICES_DATA
+            | crate::uefi::EFI_ACPI_RECLAIM_MEMORY
+            | crate::uefi::EFI_ACPI_MEMORY_NVS
+            | crate::uefi::EFI_MEMORY_MAPPED_IO
+            | crate::uefi::EFI_MEMORY_MAPPED_IO_PORT_SPACE => {
                 let start = descriptor.PhysicalStart;
                 let end = start + (descriptor.NumberOfPages * PAGE_SIZE);
                 for addr in (start..end).step_by(PAGE_SIZE as usize) {
                     unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
                 }
-            },
+            }
             _ => {}
-         }
+        }
     }
 
     // 3. Map Framebuffer
@@ -167,9 +169,9 @@ pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) 
     for addr in (fb_base..(fb_base + fb_size)).step_by(PAGE_SIZE as usize) {
         unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
     }
-    
+
     // 4. Load CR3
     unsafe { asm!("mov cr3, {}", in(reg) pml4_phys) };
-    
+
     pml4_phys
 }
