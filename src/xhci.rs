@@ -73,6 +73,7 @@ pub const TRB_SETUP_STAGE: u8 = 2;
 pub const TRB_DATA_STAGE: u8 = 3;
 pub const TRB_STATUS_STAGE: u8 = 4;
 pub const TRB_TRANSFER_EVENT: u8 = 32;
+pub const TRB_LINK: u8 = 6;
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -143,10 +144,19 @@ pub struct TransferRing {
 
 impl TransferRing {
     pub fn new(buffer: *mut Trb, size_bytes: usize) -> Self {
-        unsafe { core::ptr::write_bytes(buffer, 0, size_bytes) };
+        let size = size_bytes / core::mem::size_of::<Trb>();
+        unsafe {
+            core::ptr::write_bytes(buffer, 0, size_bytes);
+            // Setup Link TRB at the end
+            let link_trb_ptr = buffer.add(size - 1);
+            let mut link_trb = Trb::default();
+            link_trb.param = buffer as u64;
+            link_trb.control = (TRB_LINK as u32) << 10 | (1 << 1); // TC = 1
+            write_volatile(link_trb_ptr, link_trb);
+        }
         Self {
             base: buffer,
-            size: size_bytes / core::mem::size_of::<Trb>(),
+            size: size - 1, // Number of usable slots
             enqueue_index: 0,
             cycle_bit: true,
         }
@@ -161,15 +171,17 @@ impl TransferRing {
 
         self.enqueue_index += 1;
         if self.enqueue_index >= self.size {
-            // In a real implementation we would use a Link TRB here.
-            // For now, we just wrap around and flip the cycle bit.
+            // Update Link TRB cycle bit
+            let link_trb_ptr = unsafe { self.base.add(self.size) };
+            let mut link_trb = unsafe { read_volatile(link_trb_ptr) };
+            link_trb.control = (link_trb.control & !1) | (if self.cycle_bit { 1 } else { 0 });
+            unsafe { write_volatile(link_trb_ptr, link_trb) };
+
             self.enqueue_index = 0;
             self.cycle_bit = !self.cycle_bit;
         }
 
         // Ring Doorbell
-        // Doorbell register for slot: db[slot_id]
-        // Value to write: endpoint_id
         unsafe { write_volatile(db, endpoint_id as u32) };
     }
 }
@@ -211,6 +223,25 @@ pub struct CommandRing {
 }
 
 impl CommandRing {
+    pub fn new(buffer: *mut Trb, size_bytes: usize) -> Self {
+        let size = size_bytes / core::mem::size_of::<Trb>();
+        unsafe {
+            core::ptr::write_bytes(buffer, 0, size_bytes);
+            // Setup Link TRB at the end
+            let link_trb_ptr = buffer.add(size - 1);
+            let mut link_trb = Trb::default();
+            link_trb.param = buffer as u64;
+            link_trb.control = (TRB_LINK as u32) << 10 | (1 << 1); // TC = 1
+            write_volatile(link_trb_ptr, link_trb);
+        }
+        Self {
+            base: buffer,
+            size: size - 1,
+            enqueue_index: 0,
+            cycle_bit: true,
+        }
+    }
+
     pub unsafe fn enqueue(&mut self, mut trb: Trb, db: *mut u32) {
         let control = trb.control & !1;
         trb.control = control | (if self.cycle_bit { 1 } else { 0 });
@@ -220,6 +251,12 @@ impl CommandRing {
 
         self.enqueue_index += 1;
         if self.enqueue_index >= self.size {
+            // Update Link TRB cycle bit
+            let link_trb_ptr = unsafe { self.base.add(self.size) };
+            let mut link_trb = unsafe { read_volatile(link_trb_ptr) };
+            link_trb.control = (link_trb.control & !1) | (if self.cycle_bit { 1 } else { 0 });
+            unsafe { write_volatile(link_trb_ptr, link_trb) };
+
             self.enqueue_index = 0;
             self.cycle_bit = !self.cycle_bit;
         }
@@ -416,15 +453,7 @@ pub unsafe fn init(device: PciDevice) {
     let cmd_ring_base = core::ptr::addr_of_mut!(COMMAND_RING_BUFFER).cast::<Trb>();
     let cmd_ring_size = 4096 / core::mem::size_of::<Trb>();
 
-    // Clear buffer
-    unsafe { core::ptr::write_bytes(cmd_ring_base, 0, cmd_ring_size) };
-
-    let cmd_ring = CommandRing {
-        base: cmd_ring_base,
-        size: cmd_ring_size,
-        enqueue_index: 0,
-        cycle_bit: true,
-    };
+    let cmd_ring = CommandRing::new(cmd_ring_base, 4096);
 
     let crcr = (cmd_ring_base as u64) | 1; // Bit 0: RCS (Ring Cycle State) = 1
     unsafe { write_volatile(&mut (*op).crcr, crcr) };
@@ -1054,7 +1083,7 @@ pub unsafe fn setup_keyboard_endpoint(slot_id: u8, ep_index: u8, mps: u16, inter
         let buffers_ptr = core::ptr::addr_of_mut!(KEYBOARD_TR_BUFFERS);
         &mut (*buffers_ptr).0[slot_id as usize - 1] as *mut [Trb; 256] as *mut Trb
     };
-    let tr = TransferRing::new(tr_buffer, 256);
+    let tr = TransferRing::new(tr_buffer, 4096);
     unsafe {
         let rings_ptr = core::ptr::addr_of_mut!(KEYBOARD_TRANSFER_RINGS);
         (*rings_ptr)[slot_id as usize - 1] = Some(tr);
