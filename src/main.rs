@@ -187,7 +187,21 @@ pub unsafe extern "sysv64" fn user_main() {
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
     }
-    loop {}
+    loop {
+        unsafe {
+            syscall(9, 0, 0, 0, 0, 0, 0); // xHCI Poll
+
+            // Read Key (Syscall 11)
+            let key = syscall(11, 0, 0, 0, 0, 0, 0);
+            if key != 0 {
+                // syscall(1, "Key pressed!\n".as_ptr() as usize, 13, 0, 0, 0, 0);
+                if key as u8 == b'q' {
+                    syscall(1, "Shutting down...\n".as_ptr() as usize, 17, 0, 0, 0, 0);
+                    syscall(10, 0, 0, 0, 0, 0, 0); // Shutdown
+                }
+            }
+        }
+    }
 }
 
 #[inline(always)]

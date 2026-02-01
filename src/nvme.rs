@@ -463,3 +463,30 @@ pub unsafe fn nvme_write(nsid: u32, lba: u64, buffer: *mut u8, count: u32) -> i3
 
     0
 }
+
+pub unsafe fn shutdown() {
+    let ctx_ptr = addr_of_mut!(NVME_CTX);
+    let ctx = &mut *ctx_ptr;
+    if !ctx.regs.is_null() {
+        println!("NVMe: Shutting down...");
+        let regs = &mut *ctx.regs;
+        // Set CC.SHN = 01b (Normal Shutdown)
+        let mut cc = read_volatile(&regs.cc);
+        cc &= !(0x3 << 14);
+        cc |= 0x1 << 14;
+        write_volatile(&mut regs.cc, cc);
+
+        // Wait for CSTS.SHST = 10b (Shutdown Complete)
+        // SHST values: 00=Normal, 01=Occurring, 10=Complete
+        let mut timeout = 0;
+        while (read_volatile(&regs.csts) >> 2) & 0x3 != 0x2 {
+            core::hint::spin_loop();
+            timeout += 1;
+            if timeout > 10000000 {
+                println!("NVMe: Shutdown timeout");
+                break;
+            }
+        }
+        println!("NVMe: Shutdown complete");
+    }
+}

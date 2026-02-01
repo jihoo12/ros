@@ -1176,3 +1176,26 @@ pub unsafe fn queue_keyboard_report_request(slot_id: u8, ep_index: u8) {
     // println!("xHCI: Queueing report request for slot {}, ep {}", slot_id, ep_index);
     unsafe { tr.enqueue(trb, db, ep_index) };
 }
+
+pub unsafe fn shutdown() {
+    if let Some(ctx) = unsafe { &mut *core::ptr::addr_of_mut!(XHCI_CTX) } {
+        println!("xHCI: Shutting down...");
+        let op = &mut *ctx.op;
+        // Stop Controller (RS = 0)
+        let mut cmd = read_volatile(&op.usbcmd);
+        cmd &= !1;
+        write_volatile(&mut op.usbcmd, cmd);
+
+        // Wait for Halted (HCH = 1)
+        let mut timeout = 0;
+        while (read_volatile(&op.usbsts) & 1) == 0 {
+            core::hint::spin_loop();
+            timeout += 1;
+            if timeout > 10000000 {
+                println!("xHCI: Shutdown timeout");
+                break;
+            }
+        }
+        println!("xHCI: Shutdown complete");
+    }
+}

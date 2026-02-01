@@ -267,6 +267,8 @@ fn sys_nvme_write(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
 
 fn sys_shutdown() {
     unsafe {
+        crate::xhci::shutdown();
+        crate::nvme::shutdown();
         crate::uefi::system_reset(crate::uefi::EFI_RESET_TYPE::EfiResetShutdown, 0);
     }
 }
