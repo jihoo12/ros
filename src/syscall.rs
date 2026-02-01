@@ -215,12 +215,6 @@ fn sys_print(ptr: usize, len: usize) {
     match str::from_utf8(slice) {
         Ok(s) => {
             crate::print!("{}", s);
-            // Debug: Echo to serial port (COM1 0x3F8)
-            for b in s.bytes() {
-                unsafe {
-                    crate::io::outb(0x3F8, b);
-                }
-            }
         }
         Err(e) => {
             crate::print!(

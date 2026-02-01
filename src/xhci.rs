@@ -384,7 +384,18 @@ const HID_ASCII_TABLE: [u8; 128] = {
     table[0x27] = b'0';
     table[0x28] = b'\n'; // Enter
     table[0x2a] = 0x08; // Backspace
+    table[0x2b] = b'\t'; // Tab
     table[0x2c] = b' '; // Space
+    table[0x2d] = b'-';
+    table[0x2e] = b'=';
+    table[0x2f] = b'[';
+    table[0x30] = b']';
+    table[0x31] = b'\\';
+    table[0x33] = b';';
+    table[0x34] = b'\'';
+    table[0x36] = b',';
+    table[0x37] = b'.';
+    table[0x38] = b'/';
 
     // Arrow Keys
     table[0x4F] = 0x80; // Right

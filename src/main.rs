@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+#[macro_use]
 extern crate alloc;
 
 mod uefi;
@@ -42,6 +43,7 @@ mod pic;
 mod scheduler;
 mod shell;
 mod syscall;
+pub mod tinyasm;
 mod writer;
 mod xhci;
 #[unsafe(no_mangle)]

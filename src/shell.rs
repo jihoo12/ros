@@ -265,6 +265,41 @@ impl Shell {
                 "clear" => {
                     unsafe { syscall(12, 0, 0, 0, 0, 0, 0) };
                 }
+                "asm" => {
+                    use crate::tinyasm::encoder::encode_instruction;
+                    use crate::tinyasm::parser::parse_instruction;
+
+                    // Skip the "asm" command and get the rest of the line
+                    let trimmed = line.trim_start();
+                    let arg_str = if trimmed.starts_with("asm") {
+                        trimmed["asm".len()..].trim()
+                    } else {
+                        ""
+                    };
+
+                    if arg_str.is_empty() {
+                        user_print("Usage: asm <instruction>\n");
+                        user_print("Example: asm mov rax, rcx\n");
+                    } else if let Some(instr) = parse_instruction(arg_str) {
+                        let bytes = encode_instruction(instr);
+                        user_print("Encoded '");
+                        user_print(arg_str);
+                        user_print("': ");
+                        for byte in bytes.iter() {
+                            let mut hex = [0u8; 3];
+                            let chars = b"0123456789ABCDEF";
+                            hex[0] = chars[((byte >> 4) & 0xF) as usize];
+                            hex[1] = chars[(byte & 0xF) as usize];
+                            hex[2] = b' ';
+                            user_print(unsafe { str::from_utf8_unchecked(&hex) });
+                        }
+                        user_print("\n");
+                    } else {
+                        user_print("Error: Could not parse instruction '");
+                        user_print(arg_str);
+                        user_print("'\n");
+                    }
+                }
                 _ => {
                     user_print("Unknown command: ");
                     user_print(cmd);
