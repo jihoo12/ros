@@ -185,6 +185,15 @@ extern "sysv64" fn syscall_dispatcher_impl(
             }
             0
         }
+        10 => {
+            // sys_shutdown()
+            sys_shutdown();
+            0
+        }
+        11 => {
+            // sys_read_key() -> u8
+            sys_read_key()
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -254,6 +263,20 @@ fn sys_nvme_read(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
 fn sys_nvme_write(nsid: usize, lba: usize, ptr: usize, count: usize) -> i32 {
     let buf = ptr as *mut u8;
     unsafe { crate::nvme::nvme_write(nsid as u32, lba as u64, buf, count as u32) }
+}
+
+fn sys_shutdown() {
+    unsafe {
+        crate::uefi::system_reset(crate::uefi::EFI_RESET_TYPE::EfiResetShutdown, 0);
+    }
+}
+
+fn sys_read_key() -> usize {
+    if let Some(key) = crate::xhci::get_key() {
+        key as usize
+    } else {
+        0
+    }
 }
 
 #[inline(always)]

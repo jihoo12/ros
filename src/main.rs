@@ -26,6 +26,7 @@ pub struct BootInfo {
     pub memory_map_size: usize,
     pub descriptor_size: usize,
     pub descriptor_version: u32,
+    pub runtime_services: u64,
 }
 
 mod allocator;
@@ -57,6 +58,11 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     println!("Framebuffer: {:#x}", boot_info.framebuffer_base);
     // Initialize Frame Allocator
     let mut allocator = unsafe { memory::FrameAllocator::new(boot_info) };
+
+    // Initialize UEFI Runtime Services
+    unsafe {
+        uefi::init_runtime_services(boot_info.runtime_services as *mut uefi::EFI_RUNTIME_SERVICES);
+    }
 
     // Initialize GDT
     unsafe {
@@ -177,15 +183,11 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    let msg = "User Task A: Hello! Polling xHCI events...\n";
+    let msg = "User Task A: Hello! Polling xHCI events... Press 'q' to shutdown.\n";
     unsafe {
         syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
     }
-    loop {
-        unsafe {
-            syscall(9, 0, 0, 0, 0, 0, 0);
-        }
-    }
+    loop {}
 }
 
 #[inline(always)]
@@ -267,6 +269,7 @@ pub extern "efiapi" fn efi_main(
     }
 
     let boot_services = unsafe { (*system_table).BootServices };
+    let runtime_services = unsafe { (*system_table).RuntimeServices };
 
     // 2. Locate GOP
     let mut gop: *mut EFI_GRAPHICS_OUTPUT_PROTOCOL = core::ptr::null_mut();
@@ -366,6 +369,7 @@ pub extern "efiapi" fn efi_main(
         memory_map_size,
         descriptor_size,
         descriptor_version,
+        runtime_services: runtime_services as u64,
     };
 
     kernel_main(&boot_info);

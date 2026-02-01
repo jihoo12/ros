@@ -72,13 +72,17 @@ pub struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
     pub Mode: *mut EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE,
 }
 
-
-
 // Protocols
 #[repr(C)]
 pub struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL {
-    pub Reset: unsafe extern "efiapi" fn(This: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL, ExtendedVerification: bool) -> EFI_STATUS,
-    pub OutputString: unsafe extern "efiapi" fn(This: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL, String: *const CHAR16) -> EFI_STATUS,
+    pub Reset: unsafe extern "efiapi" fn(
+        This: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL,
+        ExtendedVerification: bool,
+    ) -> EFI_STATUS,
+    pub OutputString: unsafe extern "efiapi" fn(
+        This: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL,
+        String: *const CHAR16,
+    ) -> EFI_STATUS,
     // Other fields omitted for minimalism as we only need OutputString
 }
 
@@ -95,11 +99,11 @@ pub struct EFI_TABLE_HEADER {
 // Memory Map
 #[repr(C)]
 pub struct EFI_MEMORY_DESCRIPTOR {
-  pub Type: u32,
-  pub PhysicalStart: u64, // EFI_PHYSICAL_ADDRESS
-  pub VirtualStart: u64, // EFI_VIRTUAL_ADDRESS
-  pub NumberOfPages: u64,
-  pub Attribute: u64,
+    pub Type: u32,
+    pub PhysicalStart: u64, // EFI_PHYSICAL_ADDRESS
+    pub VirtualStart: u64,  // EFI_VIRTUAL_ADDRESS
+    pub NumberOfPages: u64,
+    pub Attribute: u64,
 }
 
 pub const EFI_RESERVED_MEMORY_TYPE: u32 = 0;
@@ -130,7 +134,7 @@ pub struct EFI_BOOT_SERVICES {
         MemoryMap: *mut EFI_MEMORY_DESCRIPTOR,
         MapKey: *mut usize,
         DescriptorSize: *mut usize,
-        DescriptorVersion: *mut u32
+        DescriptorVersion: *mut u32,
     ) -> EFI_STATUS,
     pub AllocatePool: *const c_void,
     pub FreePool: *const c_void,
@@ -153,7 +157,8 @@ pub struct EFI_BOOT_SERVICES {
     pub StartImage: *const c_void,
     pub Exit: *const c_void,
     pub UnloadImage: *const c_void,
-    pub ExitBootServices: unsafe extern "efiapi" fn(ImageHandle: EFI_HANDLE, MapKey: usize) -> EFI_STATUS,
+    pub ExitBootServices:
+        unsafe extern "efiapi" fn(ImageHandle: EFI_HANDLE, MapKey: usize) -> EFI_STATUS,
     pub GetNextMonotonicCount: *const c_void,
     pub Stall: *const c_void,
     pub SetWatchdogTimer: *const c_void,
@@ -175,6 +180,36 @@ pub struct EFI_BOOT_SERVICES {
 }
 
 #[repr(C)]
+pub enum EFI_RESET_TYPE {
+    EfiResetCold,
+    EfiResetWarm,
+    EfiResetShutdown,
+    EfiResetPlatformSpecific,
+}
+
+#[repr(C)]
+pub struct EFI_RUNTIME_SERVICES {
+    pub Hdr: EFI_TABLE_HEADER,
+    pub GetTime: *const c_void,
+    pub SetTime: *const c_void,
+    pub GetWakeupTime: *const c_void,
+    pub SetWakeupTime: *const c_void,
+    pub SetVirtualAddressMap: *const c_void,
+    pub ConvertPointer: *const c_void,
+    pub GetVariable: *const c_void,
+    pub GetNextVariableName: *const c_void,
+    pub SetVariable: *const c_void,
+    pub GetNextHighMonotonicCount: *const c_void,
+    pub ResetSystem: unsafe extern "efiapi" fn(
+        ResetType: EFI_RESET_TYPE,
+        ResetStatus: EFI_STATUS,
+        DataSize: usize,
+        ResetData: *const c_void,
+    ) -> !,
+    // Remaining fields omitted
+}
+
+#[repr(C)]
 pub struct EFI_SYSTEM_TABLE {
     pub Hdr: EFI_TABLE_HEADER,
     pub FirmwareVendor: *const CHAR16,
@@ -185,8 +220,23 @@ pub struct EFI_SYSTEM_TABLE {
     pub ConOut: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL,
     pub StandardErrorHandle: EFI_HANDLE,
     pub StdErr: *mut EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL,
-    pub RuntimeServices: *mut c_void,
+    pub RuntimeServices: *mut EFI_RUNTIME_SERVICES,
     pub BootServices: *mut EFI_BOOT_SERVICES,
     pub NumberOfTableEntries: usize,
     pub ConfigurationTable: *mut c_void,
+}
+
+static mut RUNTIME_SERVICES: *mut EFI_RUNTIME_SERVICES = core::ptr::null_mut();
+
+pub unsafe fn init_runtime_services(rt: *mut EFI_RUNTIME_SERVICES) {
+    RUNTIME_SERVICES = rt;
+}
+
+pub unsafe fn system_reset(reset_type: EFI_RESET_TYPE, status: EFI_STATUS) -> ! {
+    if !RUNTIME_SERVICES.is_null() {
+        ((*RUNTIME_SERVICES).ResetSystem)(reset_type, status, 0, core::ptr::null());
+    }
+    loop {
+        core::arch::asm!("hlt");
+    }
 }
