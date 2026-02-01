@@ -40,6 +40,11 @@ impl Writer {
 
         match c {
             '\n' => self.new_line(),
+            '\x08' => {
+                if self.x_pos >= 8 {
+                    self.x_pos -= 8;
+                }
+            }
             c => {
                 if self.x_pos >= self.info.horizontal_resolution as usize {
                     self.new_line();

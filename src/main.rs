@@ -183,24 +183,76 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    let msg = "User Task A: Hello! Polling xHCI events... Press 'q' to shutdown.\n";
-    unsafe {
-        syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
-    }
-    loop {
+    fn user_print(s: &str) {
         unsafe {
-            syscall(9, 0, 0, 0, 0, 0, 0); // xHCI Poll
+            syscall(1, s.as_ptr() as usize, s.len(), 0, 0, 0, 0);
+        }
+    }
 
-            // Read Key (Syscall 11)
-            let key = syscall(11, 0, 0, 0, 0, 0, 0);
-            if key != 0 {
-                // syscall(1, "Key pressed!\n".as_ptr() as usize, 13, 0, 0, 0, 0);
-                if key as u8 == b'q' {
-                    syscall(1, "Shutting down...\n".as_ptr() as usize, 17, 0, 0, 0, 0);
-                    syscall(10, 0, 0, 0, 0, 0, 0); // Shutdown
+    user_print("\nWelcome to Simple Shell!\n");
+    user_print("Type 'help' to see available commands.\n");
+
+    let mut buffer = [0u8; 64];
+    let mut len = 0;
+
+    loop {
+        user_print("> ");
+
+        loop {
+            unsafe {
+                syscall(9, 0, 0, 0, 0, 0, 0);
+            }
+            // sys_read_key (11)
+            let key = unsafe { syscall(11, 0, 0, 0, 0, 0, 0) };
+
+            if key == 0 {
+                continue;
+            }
+
+            let b = key as u8;
+
+            if b == b'\n' || b == b'\r' {
+                user_print("\n");
+                break;
+            } else if b == 0x08 || b == 0x7F {
+                // Backspace
+                if len > 0 {
+                    len -= 1;
+                    user_print("\x08 \x08");
+                }
+            } else {
+                if len < buffer.len() {
+                    buffer[len] = b;
+                    len += 1;
+                    // Echo
                 }
             }
         }
+
+        if let Ok(cmd) = core::str::from_utf8(&buffer[..len]) {
+            match cmd {
+                "help" => {
+                    user_print("Available commands:\n");
+                    user_print("  help     - Show this help message\n");
+                    user_print("  hello    - Print a greeting\n");
+                    user_print("  shutdown - Shutdown the system\n");
+                }
+                "hello" => {
+                    user_print("Hello, User!\n");
+                }
+                "shutdown" => {
+                    user_print("System shutting down...\n");
+                    unsafe { syscall(10, 0, 0, 0, 0, 0, 0) };
+                }
+                "" => {}
+                _ => {
+                    user_print("Unknown command: ");
+                    user_print(cmd);
+                    user_print("\n");
+                }
+            }
+        }
+        len = 0;
     }
 }
 

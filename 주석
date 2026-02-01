@@ -160,4 +160,6 @@ pub unsafe extern "sysv64" fn user_task_b() {
             let msg = "User: NVMe Test FAILED: Invalid UTF-8\n";
             syscall(1, msg.as_ptr() as usize, msg.len(), 0, 0, 0, 0);
         }
+
+    }
 ***/
