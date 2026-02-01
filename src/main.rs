@@ -225,6 +225,8 @@ pub unsafe extern "sysv64" fn user_main() {
                     buffer[len] = b;
                     len += 1;
                     // Echo
+                    let s = unsafe { core::str::from_utf8_unchecked(core::slice::from_ref(&b)) };
+                    user_print(s);
                 }
             }
         }

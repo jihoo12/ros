@@ -659,7 +659,7 @@ pub unsafe fn process_events() {
                                     if (key as usize) < HID_ASCII_TABLE.len() {
                                         let ascii = HID_ASCII_TABLE[key as usize];
                                         if ascii != 0 {
-                                            print!("{}", ascii as char);
+                                            // print!("{}", ascii as char);
                                             push_key(ascii);
                                         }
                                     }
