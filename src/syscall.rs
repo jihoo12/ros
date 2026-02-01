@@ -194,6 +194,11 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_read_key() -> u8
             sys_read_key()
         }
+        12 => {
+            // sys_clear()
+            sys_clear();
+            0
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -279,6 +284,10 @@ fn sys_read_key() -> usize {
     } else {
         0
     }
+}
+
+fn sys_clear() {
+    crate::writer::clear();
 }
 
 #[inline(always)]

@@ -263,9 +263,7 @@ impl Shell {
                     unsafe { syscall(10, 0, 0, 0, 0, 0, 0) };
                 }
                 "clear" => {
-                    for _ in 0..30 {
-                        user_print("\n");
-                    }
+                    unsafe { syscall(12, 0, 0, 0, 0, 0, 0) };
                 }
                 _ => {
                     user_print("Unknown command: ");

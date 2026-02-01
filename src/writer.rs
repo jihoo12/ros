@@ -102,15 +102,18 @@ impl Writer {
         // Let's use 8 for now.
     }
 
-    fn clear_screen(&mut self) {
-        for y in 0..self.info.vertical_resolution {
-            for x in 0..self.info.horizontal_resolution {
-                self.write_pixel(x as usize, y as usize, 0);
-            }
+    pub fn clear_screen(&mut self) {
+        // Optimization: fill by 32 bits or 64 bits if possible, but per-pixel is fine for now
+        // Or simpler: memset
+        let size = self.info.framebuffer_size;
+        let ptr = self.framebuffer;
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, size);
         }
         self.x_pos = 0;
         self.y_pos = 0;
     }
+
     /***
     //test draw image
     pub fn draw_embedded_image(&mut self, x_pos: usize, y_pos: usize, width: usize, height: usize) {
@@ -125,6 +128,15 @@ impl Writer {
         }
     }
     ***/
+}
+
+pub fn clear() {
+    unsafe {
+        #[allow(static_mut_refs)]
+        if let Some(writer) = GLOBAL_WRITER.as_mut() {
+            writer.clear_screen();
+        }
+    }
 }
 
 impl fmt::Write for Writer {
