@@ -385,6 +385,13 @@ const HID_ASCII_TABLE: [u8; 128] = {
     table[0x28] = b'\n'; // Enter
     table[0x2a] = 0x08; // Backspace
     table[0x2c] = b' '; // Space
+
+    // Arrow Keys
+    table[0x4F] = 0x80; // Right
+    table[0x50] = 0x81; // Left
+    table[0x51] = 0x82; // Down
+    table[0x52] = 0x83; // Up
+
     table
 };
 

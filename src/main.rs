@@ -7,6 +7,8 @@ mod uefi;
 use core::ffi::c_void;
 use uefi::*;
 
+use crate::shell::shell;
+
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -38,10 +40,10 @@ mod nvme;
 mod pci;
 mod pic;
 mod scheduler;
+mod shell;
 mod syscall;
 mod writer;
 mod xhci;
-
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     // Initialize Global Writer (for interrupts and syscalls)
@@ -183,109 +185,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn user_main() {
-    fn user_print(s: &str) {
-        unsafe {
-            syscall(1, s.as_ptr() as usize, s.len(), 0, 0, 0, 0);
-        }
-    }
-
-    user_print("\nWelcome to Simple Shell!\n");
-    user_print("Type 'help' to see available commands.\n");
-
-    let mut buffer = [0u8; 64];
-    let mut len = 0;
-
-    loop {
-        user_print("> ");
-
-        loop {
-            unsafe {
-                syscall(9, 0, 0, 0, 0, 0, 0);
-            }
-            // sys_read_key (11)
-            let key = unsafe { syscall(11, 0, 0, 0, 0, 0, 0) };
-
-            if key == 0 {
-                continue;
-            }
-
-            let b = key as u8;
-
-            if b == b'\n' || b == b'\r' {
-                user_print("\n");
-                break;
-            } else if b == 0x08 || b == 0x7F {
-                // Backspace
-                if len > 0 {
-                    len -= 1;
-                    user_print("\x08 \x08");
-                }
-            } else {
-                if len < buffer.len() {
-                    buffer[len] = b;
-                    len += 1;
-                    // Echo
-                    let s = unsafe { core::str::from_utf8_unchecked(core::slice::from_ref(&b)) };
-                    user_print(s);
-                }
-            }
-        }
-
-        if let Ok(cmd) = core::str::from_utf8(&buffer[..len]) {
-            match cmd {
-                "help" => {
-                    user_print("Available commands:\n");
-                    user_print("  help     - Show this help message\n");
-                    user_print("  hello    - Print a greeting\n");
-                    user_print("  shutdown - Shutdown the system\n");
-                }
-                "hello" => {
-                    user_print("Hello, User!\n");
-                }
-                "shutdown" => {
-                    user_print("System shutting down...\n");
-                    unsafe { syscall(10, 0, 0, 0, 0, 0, 0) };
-                }
-                "" => {}
-                _ => {
-                    user_print("Unknown command: ");
-                    user_print(cmd);
-                    user_print("\n");
-                }
-            }
-        }
-        len = 0;
-    }
-}
-
-#[inline(always)]
-unsafe fn syscall(
-    id: usize,
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-    arg5: usize,
-    arg6: usize,
-) -> usize {
-    let ret: usize;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") id,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            in("r10") arg4,
-            in("r8") arg5,
-            in("r9") arg6,
-            lateout("rax") ret,
-            lateout("rcx") _,
-            lateout("r11") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    ret
+    shell();
 }
 
 pub unsafe fn enter_usermode(user_rsp: u64) -> ! {
