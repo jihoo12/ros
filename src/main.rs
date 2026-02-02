@@ -10,10 +10,37 @@ use uefi::*;
 
 use crate::shell::shell;
 pub mod std;
+pub mod tinyasm;
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    let cs: u16;
+    unsafe {
+        core::arch::asm!("mov {0:x}, cs", out(reg) cs);
+    }
+    let cpl = cs & 0x03;
+
+    if cpl == 3 {
+        // User Mode Panic - Use Syscall to print
+        // We can't format easily without alloc, so just print a static error string + address?
+        // Or try to format into a small stack buffer.
+        let msg = "PANIC in User Mode!\n";
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") 1, // sys_print
+                in("rdi") msg.as_ptr(),
+                in("rsi") msg.len(),
+                out("rcx") _,
+                out("r11") _,
+                options(nostack, preserves_flags)
+            );
+        }
+    } else {
+        // Kernel Mode Panic
+        println!("{}", _info);
+    }
     loop {}
 }
 

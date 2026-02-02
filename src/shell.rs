@@ -265,7 +265,65 @@ impl Shell {
                 "clear" => {
                     unsafe { syscall(12, 0, 0, 0, 0, 0, 0) };
                 }
-                "asm" => {}
+                "asm" => {
+                    use crate::tinyasm::encoder::{Instruction, Operand, encode_instruction};
+                    use crate::tinyasm::jit::JitMemory;
+                    use crate::tinyasm::registers::Register;
+
+                    user_print("Running TinyASM Demo...\n");
+
+                    // mov rax, 42
+                    // ret
+                    let instrs = [
+                        Instruction::Mov(Operand::Reg(Register::RAX), Operand::Imm64(42)),
+                        Instruction::Ret,
+                    ];
+
+                    let mut machine_code = alloc::vec::Vec::new();
+                    user_print("Encoding...\n");
+                    for inst in instrs.iter() {
+                        if let Err(_) = encode_instruction(*inst, &mut machine_code) {
+                            user_print("Encoding error\n");
+                            return;
+                        }
+                    }
+                    user_print("\nDone encoding.\n");
+                    user_print("Encoded: ");
+                    for _ in &machine_code {
+                        // Simple hex print (manually since we don't have format! in user_print easily or it uses syscall)
+                        // Actually, let's just print simple message.
+                    }
+                    user_print("bytes\n");
+
+                    match JitMemory::new(4096) {
+                        Ok(mut jit) => {
+                            if let Err(_) = jit.write(&machine_code) {
+                                user_print("JIT Write Error\n");
+                            } else {
+                                if let Err(_) = jit.make_executable() {
+                                    user_print("JIT Make Executable Error\n");
+                                } else {
+                                    unsafe {
+                                        let func = jit.as_fn_u64();
+                                        let res = func();
+                                        // We need to print res. shell doesn't have formatted print helpers accessible easily?
+                                        // shell::user_print takes &str.
+                                        // Let's use formatting if available or hack it.
+                                        // We can use alloc::format! if we are in a crate with alloc.
+                                        // shell.rs is part of main, which has extern crate alloc.
+                                        // So we can use format! macro.
+                                        let msg = alloc::format!("Result: {}\n", res);
+                                        user_print(&msg);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            user_print("JIT Alloc Error\n");
+                        }
+                    }
+                }
+
                 _ => {
                     user_print("Unknown command: ");
                     user_print(cmd);

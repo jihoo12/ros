@@ -41,7 +41,11 @@ impl LinkedListAllocator {
         crate::println!("Heap initialized at {:#x} with size {}", start, size);
     }
 
-    pub unsafe fn alloc_raw(&mut self, size: usize) -> *mut u8 {
+    pub unsafe fn alloc_raw(&mut self, mut size: usize) -> *mut u8 {
+        // Ensure size is aligned to 8 bytes to keep block headers aligned
+        let align_mask = mem::align_of::<usize>() - 1;
+        size = (size + align_mask) & !align_mask;
+
         let mut current = self.head;
 
         while !current.is_null() {
@@ -173,8 +177,77 @@ static INNER_ALLOCATOR: Spinlock<LinkedListAllocator> = Spinlock::new(LinkedList
 #[global_allocator]
 static ALLOCATOR: KernelAllocator = KernelAllocator;
 
+// Helper to check Current Privilege Level
+#[inline(always)]
+fn get_cpl() -> u16 {
+    let cs: u16;
+    unsafe {
+        core::arch::asm!("mov {0:x}, cs", out(reg) cs);
+    }
+    cs & 0x03
+}
+
+// Minimal syscall wrapper for allocation
+#[inline(always)]
+unsafe fn user_alloc(layout: Layout) -> *mut u8 {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 2, // sys_alloc
+            in("rdi") layout.size(),
+            in("rsi") layout.align(),
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret as *mut u8
+}
+
+#[inline(always)]
+unsafe fn user_free(ptr: *mut u8) {
+    let _ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 3, // sys_free
+            in("rdi") ptr,
+            lateout("rax") _ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+#[inline(always)]
+unsafe fn user_realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") 13, // sys_realloc
+            in("rdi") ptr,
+            in("rsi") new_size,
+            in("rdx") layout.align(),
+            lateout("rax") ret,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    ret as *mut u8
+}
+
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Check if we are in User Mode (Ring 3)
+        if get_cpl() == 3 {
+            return user_alloc(layout);
+        }
+
         // We always use the "offset header" strategy to support alignment
         // and robust free.
         // Format: [HeapBlock] ... [OffsetHeader] [AlignedPayload]
@@ -223,8 +296,13 @@ unsafe impl GlobalAlloc for KernelAllocator {
         aligned_ptr
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() {
+            return;
+        }
+
+        if get_cpl() == 3 {
+            user_free(ptr);
             return;
         }
 
@@ -241,6 +319,10 @@ unsafe impl GlobalAlloc for KernelAllocator {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if get_cpl() == 3 {
+            return user_realloc(ptr, layout, new_size);
+        }
+
         if ptr.is_null() {
             return unsafe {
                 self.alloc(Layout::from_size_align_unchecked(new_size, layout.align()))
