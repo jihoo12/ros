@@ -43,7 +43,6 @@ mod pic;
 mod scheduler;
 mod shell;
 mod syscall;
-pub mod tinyasm;
 mod writer;
 mod xhci;
 #[unsafe(no_mangle)]
