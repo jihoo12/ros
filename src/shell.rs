@@ -1,5 +1,4 @@
 use core::str;
-
 // Keys mapped in xhci.rs
 const KEY_RIGHT: u8 = 0x80;
 const KEY_LEFT: u8 = 0x81;
@@ -12,7 +11,6 @@ const KEY_BACKSPACE: u8 = 0x08;
 
 const MAX_CMD_LEN: usize = 64;
 const HISTORY_SIZE: usize = 10;
-
 fn user_print(s: &str) {
     unsafe {
         syscall(1, s.as_ptr() as usize, s.len(), 0, 0, 0, 0);

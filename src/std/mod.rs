@@ -1,5 +1,5 @@
 pub mod global_alloc;
-
+pub mod stdio;
 use core::arch::asm;
 
 // Syscalls

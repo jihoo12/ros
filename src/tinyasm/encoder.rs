@@ -84,6 +84,9 @@ pub enum Instruction {
     Shr(Operand, Operand),
     Mul(Operand), // Operand is r/m64
     Div(Operand), // Operand is r/m64
+    Cmp(Operand, Operand),
+    Call(Operand),
+    Jmp(Operand),
     Syscall,
     Ret,
 }
@@ -102,6 +105,9 @@ impl fmt::Display for Instruction {
             Instruction::Shr(dst, count) => write!(f, "shr {}, {}", dst, count),
             Instruction::Mul(op) => write!(f, "mul {}", op),
             Instruction::Div(op) => write!(f, "div {}", op),
+            Instruction::Cmp(dst, src) => write!(f, "cmp {}, {}", dst, src),
+            Instruction::Call(op) => write!(f, "call {}", op),
+            Instruction::Jmp(op) => write!(f, "jmp {}", op),
             Instruction::Syscall => write!(f, "syscall"),
             Instruction::Ret => write!(f, "ret"),
         }
@@ -121,6 +127,9 @@ pub fn encode_instruction(instr: Instruction, bytes: &mut Vec<u8>) -> Result<(),
         Instruction::Not(op) => encode_unary(0xF7, 2, op, bytes)?,
         Instruction::Mul(op) => encode_unary(0xF7, 4, op, bytes)?,
         Instruction::Div(op) => encode_unary(0xF7, 6, op, bytes)?,
+        Instruction::Cmp(dst, src) => encode_arithmetic(0x39, 0x3B, 7, dst, src, bytes)?,
+        Instruction::Call(op) => encode_call(op, bytes)?,
+        Instruction::Jmp(op) => encode_jmp(op, bytes)?,
         Instruction::Syscall => bytes.extend_from_slice(&[0x0F, 0x05]),
         Instruction::Ret => bytes.push(0xC3),
     }
@@ -157,6 +166,76 @@ fn encode_rex(
     if rex != 0x40 {
         bytes.push(rex);
     }
+}
+
+fn encode_call(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match op {
+        Operand::Reg(reg) => {
+            // CALL r/m64 -> FF /2
+            if reg.is_extended() {
+                encode_rex(false, None, None, Some(reg), bytes);
+            }
+            bytes.push(0xFF);
+            bytes.push(0xC0 | (2 << 3) | reg.code());
+        }
+        Operand::Mem(mem) => {
+            // CALL r/m64 -> FF /2
+            let (modrm, sib, disp_size) = encode_mem_parts(2, false, mem, bytes)?;
+            bytes.push(0xFF);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_size, bytes);
+        }
+        Operand::Imm32(imm) => {
+            // CALL rel32 -> E8 cd
+            bytes.push(0xE8);
+            bytes.extend_from_slice(&imm.to_le_bytes());
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(format!(
+                "CALL operand {}",
+                op
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn encode_jmp(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match op {
+        Operand::Reg(reg) => {
+            // JMP r/m64 -> FF /4
+            if reg.is_extended() {
+                encode_rex(false, None, None, Some(reg), bytes);
+            }
+            bytes.push(0xFF);
+            bytes.push(0xC0 | (4 << 3) | reg.code());
+        }
+        Operand::Mem(mem) => {
+            // JMP r/m64 -> FF /4
+            let (modrm, sib, disp_size) = encode_mem_parts(4, false, mem, bytes)?;
+            bytes.push(0xFF);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_size, bytes);
+        }
+        Operand::Imm32(imm) => {
+            // JMP rel32 -> E9 cd
+            bytes.push(0xE9);
+            bytes.extend_from_slice(&imm.to_le_bytes());
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(format!(
+                "JMP operand {}",
+                op
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn encode_shift(
@@ -516,5 +595,58 @@ fn encode_mem_parts(
         Ok((modrm, Some(sib), disp_size))
     } else {
         Ok((modrm, None, disp_size))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::registers::Register;
+    use super::*;
+
+    #[test]
+    fn test_encode_cmp() {
+        let mut bytes = Vec::new();
+        // CMP RAX, RBX -> 48 39 D8
+        encode_instruction(
+            Instruction::Cmp(Operand::Reg(Register::RAX), Operand::Reg(Register::RBX)),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x48, 0x39, 0xD8]);
+
+        bytes.clear();
+        // CMP RAX, 0x12 -> 48 83 F8 12
+        encode_instruction(
+            Instruction::Cmp(Operand::Reg(Register::RAX), Operand::Imm32(0x12)),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x48, 0x83, 0xF8, 0x12]);
+    }
+
+    #[test]
+    fn test_encode_call() {
+        let mut bytes = Vec::new();
+        // CALL RAX -> FF D0
+        encode_instruction(Instruction::Call(Operand::Reg(Register::RAX)), &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xFF, 0xD0]);
+
+        bytes.clear();
+        // CALL 0x1234 (relative) -> E8 34 12 00 00
+        encode_instruction(Instruction::Call(Operand::Imm32(0x1234)), &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xE8, 0x34, 0x12, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_encode_jmp() {
+        let mut bytes = Vec::new();
+        // JMP RAX -> FF E0
+        encode_instruction(Instruction::Jmp(Operand::Reg(Register::RAX)), &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xFF, 0xE0]);
+
+        bytes.clear();
+        // JMP 0x1234 (relative) -> E9 34 12 00 00
+        encode_instruction(Instruction::Jmp(Operand::Imm32(0x1234)), &mut bytes).unwrap();
+        assert_eq!(bytes, vec![0xE9, 0x34, 0x12, 0x00, 0x00]);
     }
 }
