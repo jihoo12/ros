@@ -9,7 +9,10 @@ pub const TSS_SEL: u16 = 0x28;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 1;
 
-static mut DOUBLE_FAULT_STACK: [u8; 4096] = [0; 4096];
+#[repr(align(16))]
+struct AlignedStack([u8; 4096]);
+
+static mut DOUBLE_FAULT_STACK: AlignedStack = AlignedStack([0; 4096]);
 
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
@@ -91,13 +94,7 @@ static mut GDT: [GdtEntry; 7] = [GdtEntry {
 
 static mut GDT_PTR: GdtPointer = GdtPointer { limit: 0, base: 0 };
 
-unsafe fn set_gdt_entry(
-    index: usize,
-    base: u32,
-    limit: u32,
-    access: u8,
-    gran: u8,
-) {
+unsafe fn set_gdt_entry(index: usize, base: u32, limit: u32, access: u8, gran: u8) {
     unsafe {
         GDT[index].base_low = (base & 0xFFFF) as u16;
         GDT[index].base_middle = ((base >> 16) & 0xFF) as u8;
@@ -111,20 +108,14 @@ unsafe fn set_gdt_entry(
     }
 }
 
-unsafe fn set_gdt_system_entry(
-    index: usize,
-    base: u64,
-    limit: u32,
-    access: u8,
-    gran: u8,
-) {
+unsafe fn set_gdt_system_entry(index: usize, base: u64, limit: u32, access: u8, gran: u8) {
     unsafe {
         set_gdt_entry(index, base as u32, limit, access, gran);
     }
 
     let high_base_offset = (core::ptr::addr_of!(GDT) as u64) + ((index + 1) * 8) as u64;
     let high_base_ptr = high_base_offset as *mut u32;
-    
+
     unsafe {
         *high_base_ptr = (base >> 32) as u32;
         *high_base_ptr.add(1) = 0;
@@ -158,7 +149,13 @@ pub unsafe fn init() {
         set_gdt_entry(4, 0, 0xFFFFFFFF, 0xFA, 0xAF);
 
         // TSS Segment: Access 0x89 (Present, Ring 0, Available TSS)
-        set_gdt_system_entry(5, &raw const TSS as *const _ as u64, (size_of::<Tss>() - 1) as u32, 0x89, 0x00);
+        set_gdt_system_entry(
+            5,
+            &raw const TSS as *const _ as u64,
+            (size_of::<Tss>() - 1) as u32,
+            0x89,
+            0x00,
+        );
 
         GDT_PTR.limit = (size_of::<[GdtEntry; 7]>() - 1) as u16;
         GDT_PTR.base = &raw const GDT as *const _ as u64;
@@ -189,7 +186,7 @@ pub unsafe fn init() {
 
         // Load Task Register
         core::arch::asm!(
-            "ltr {0:x}", 
+            "ltr {0:x}",
             in(reg) TSS_SEL,
             options(nostack, preserves_flags)
         );

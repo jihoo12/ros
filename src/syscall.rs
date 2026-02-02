@@ -30,7 +30,11 @@ pub unsafe fn get_global_gs_base() -> u64 {
 
 // We need a kernel stack for syscalls.
 // allocating 16KB stack
-static mut SYSCALL_STACK: [u8; 16384] = [0; 16384];
+// aligning 16KB stack to 16 bytes
+#[repr(align(16))]
+struct AlignedStack([u8; 16384]);
+
+static mut SYSCALL_STACK: AlignedStack = AlignedStack([0; 16384]);
 
 pub unsafe fn init() {
     unsafe {
@@ -55,14 +59,18 @@ pub unsafe fn init() {
 
         // 5. Setup Kernel Stack via GS Base
         // Use raw pointers to avoid creating references to static muts (which is error in Rust 2024)
-        let stack_ptr = core::ptr::addr_of_mut!(SYSCALL_STACK) as *mut u8;
-        // Actually SYSCALL_STACK.len() might borrow. use 16384 directly.
+        // Use .0 on AlignedStack
+        let stack_ptr = core::ptr::addr_of_mut!(SYSCALL_STACK.0) as *mut u8;
+        // Actually SYSCALL_STACK.0.len() is 16384.
         let stack_end = stack_ptr.add(16384) as u64;
 
         let kgs_base = core::ptr::addr_of_mut!(KERNEL_GS_BASE);
         (*kgs_base).kernel_stack = stack_end;
 
         wrmsr(MSR_KERNEL_GS_BASE, kgs_base as u64);
+
+        // Safety: Ensure TSS RSP0 is set so interrupts from user mode can switch stack
+        crate::gdt::set_tss_stack(stack_end);
     }
 }
 

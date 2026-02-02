@@ -271,11 +271,11 @@ impl Shell {
                     use crate::tinyasm::registers::Register;
 
                     user_print("Running TinyASM Demo...\n");
-
-                    // mov rax, 42
-                    // ret
+                    //important!
+                    //add Ret in end
                     let instrs = [
-                        Instruction::Mov(Operand::Reg(Register::RAX), Operand::Imm64(42)),
+                        Instruction::Mov(Operand::Reg(Register::RAX), Operand::Imm64(10)),
+                        Instruction::Syscall,
                         Instruction::Ret,
                     ];
 
