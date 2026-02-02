@@ -147,8 +147,8 @@ extern "sysv64" fn syscall_dispatcher_impl(
             0
         }
         2 => {
-            // sys_alloc(size)
-            sys_alloc(arg1)
+            // sys_alloc(size, align)
+            sys_alloc(arg1, arg2)
         }
         3 => {
             // sys_free(ptr)
@@ -194,10 +194,18 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_read_key() -> u8
             sys_read_key()
         }
+        11 => {
+            // sys_read_key() -> u8
+            sys_read_key()
+        }
         12 => {
             // sys_clear()
             sys_clear();
             0
+        }
+        13 => {
+            // sys_realloc(ptr, size, align)
+            sys_realloc(arg1, arg2, arg3)
         }
         _ => {
             // Unknown syscall
@@ -207,6 +215,7 @@ extern "sysv64" fn syscall_dispatcher_impl(
     }
 }
 
+use core::alloc::Layout;
 use core::slice;
 use core::str;
 
@@ -228,8 +237,24 @@ fn sys_print(ptr: usize, len: usize) {
     }
 }
 
-fn sys_alloc(size: usize) -> usize {
-    unsafe { crate::allocator::alloc(size) as usize }
+fn sys_alloc(size: usize, align: usize) -> usize {
+    // We expect valid alignment from userspace (power of 2)
+    // If align is 0, default to 8.
+    let align = if align == 0 { 8 } else { align };
+    match Layout::from_size_align(size, align) {
+        Ok(layout) => unsafe { crate::allocator::alloc_aligned(layout) as usize },
+        Err(_) => 0, // Allocation failed due to invalid layout
+    }
+}
+
+fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
+    let align = if align == 0 { 8 } else { align };
+    match Layout::from_size_align(size, align) {
+        Ok(layout) => unsafe {
+            crate::allocator::realloc_aligned(ptr as *mut u8, layout, size) as usize
+        },
+        Err(_) => 0,
+    }
 }
 
 fn sys_free(ptr: usize) {
@@ -286,6 +311,20 @@ fn sys_clear() {
 
 #[inline(always)]
 unsafe fn syscall(
+    id: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+    arg6: usize,
+) -> usize {
+    let ret: usize;
+    try_syscall(id, arg1, arg2, arg3, arg4, arg5, arg6)
+}
+
+#[inline(always)]
+unsafe fn try_syscall(
     id: usize,
     arg1: usize,
     arg2: usize,

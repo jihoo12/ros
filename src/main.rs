@@ -9,6 +9,7 @@ use core::ffi::c_void;
 use uefi::*;
 
 use crate::shell::shell;
+pub mod std;
 
 #[cfg(not(test))]
 #[panic_handler]
