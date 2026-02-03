@@ -1,5 +1,6 @@
 use crate::std::stdio::{input, print};
 use crate::std::syscall;
+use alloc::string::String;
 
 const MAX_CMD_LEN: usize = 64;
 const HISTORY_SIZE: usize = 10;
@@ -106,34 +107,60 @@ impl Shell {
                     unsafe { syscall(12, 0, 0, 0, 0, 0, 0) };
                 }
                 "asm" => {
-                    use crate::tinyasm::encoder::{Instruction, Operand, encode_instruction};
+                    use crate::tinyasm::encoder::{Instruction, encode_instruction};
                     use crate::tinyasm::jit::JitMemory;
-                    use crate::tinyasm::registers::Register;
+                    use crate::tinyasm::parser::parse_instruction;
 
-                    print("Running TinyASM Demo...\n");
-                    //important!
-                    //add Ret in end
-                    let instrs = [
-                        Instruction::Mov(Operand::Reg(Register::RAX), Operand::Imm64(10)),
-                        Instruction::Syscall,
-                        Instruction::Ret,
-                    ];
+                    // Collect all arguments as a single string
+                    let mut asm_str = String::new();
+                    for arg in parts {
+                        if !asm_str.is_empty() {
+                            asm_str.push(' ');
+                        }
+                        asm_str.push_str(arg);
+                    }
+
+                    if asm_str.is_empty() {
+                        print("Usage: asm <instruction>\n");
+                        print("Example: asm mov rax, 10\n");
+                        return;
+                    }
+
+                    let mut instrs = alloc::vec::Vec::new();
+                    for part in asm_str.split(';') {
+                        let part = part.trim();
+                        if part.is_empty() {
+                            continue;
+                        }
+                        if let Some(inst) = parse_instruction(part) {
+                            instrs.push(inst);
+                        } else {
+                            print("Failed to parse instruction: ");
+                            print(part);
+                            print("\n");
+                            return;
+                        }
+                    }
+
+                    if instrs.is_empty() {
+                        print("No valid instructions found.\n");
+                        return;
+                    }
+
+                    // Always add Ret
+                    instrs.push(Instruction::Ret);
 
                     let mut machine_code = alloc::vec::Vec::new();
                     print("Encoding...\n");
                     for inst in instrs.iter() {
                         if let Err(_) = encode_instruction(*inst, &mut machine_code) {
-                            print("Encoding error\n");
+                            print("Encoding error: ");
+                            // Assuming EncodeError has some way to be printed or just generic error
+                            print("\n");
                             return;
                         }
                     }
-                    print("\nDone encoding.\n");
-                    print("Encoded: ");
-                    for _ in &machine_code {
-                        // Simple hex print (manually since we don't have format! in print easily or it uses syscall)
-                        // Actually, let's just print simple message.
-                    }
-                    print("bytes\n");
+                    print("Done encoding.\n");
 
                     match JitMemory::new(4096) {
                         Ok(mut jit) => {
@@ -146,12 +173,6 @@ impl Shell {
                                     unsafe {
                                         let func = jit.as_fn_u64();
                                         let res = func();
-                                        // We need to print res. shell doesn't have formatted print helpers accessible easily?
-                                        // shell::print takes &str.
-                                        // Let's use formatting if available or hack it.
-                                        // We can use alloc::format! if we are in a crate with alloc.
-                                        // shell.rs is part of main, which has extern crate alloc.
-                                        // So we can use format! macro.
                                         let msg = alloc::format!("Result: {}\n", res);
                                         print(&msg);
                                     }
