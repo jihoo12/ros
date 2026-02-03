@@ -1,4 +1,4 @@
-use super::encoder::{Instruction, Operand};
+use super::encoder::{Instruction, MemoryAddr, Operand};
 use super::registers::Register;
 use alloc::vec::Vec;
 
@@ -52,8 +52,79 @@ pub fn parse_operand(s: &str) -> Option<Operand> {
         }
     }
 
-    // TODO: Support memory operands if needed
+    // Try parsing as memory
+    if let Some(mem) = parse_memory(s) {
+        return Some(Operand::Mem(mem));
+    }
+
     None
+}
+
+pub fn parse_memory(s: &str) -> Option<MemoryAddr> {
+    let s = s.trim();
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return None;
+    }
+    let inner = &s[1..s.len() - 1].trim();
+
+    // Simplistic parsing for [reg], [reg+disp], [reg-disp]
+    if let Some(plus_idx) = inner.find('+') {
+        let reg_part = inner[..plus_idx].trim();
+        let disp_part = inner[plus_idx + 1..].trim();
+        let reg = parse_register(reg_part)?;
+        let disp = if disp_part.starts_with("0x") {
+            i32::from_str_radix(&disp_part[2..], 16).ok()?
+        } else {
+            disp_part.parse::<i32>().ok()?
+        };
+        return Some(MemoryAddr {
+            base: Some(reg),
+            index: None,
+            scale: 1,
+            disp,
+        });
+    }
+
+    if let Some(minus_idx) = inner.find('-') {
+        let reg_part = inner[..minus_idx].trim();
+        let disp_part = inner[minus_idx + 1..].trim();
+        let reg = parse_register(reg_part)?;
+        let disp = if disp_part.starts_with("0x") {
+            i32::from_str_radix(&disp_part[2..], 16).ok()?
+        } else {
+            disp_part.parse::<i32>().ok()?
+        };
+        return Some(MemoryAddr {
+            base: Some(reg),
+            index: None,
+            scale: 1,
+            disp: -disp,
+        });
+    }
+
+    // Just [reg]
+    if let Some(reg) = parse_register(inner) {
+        return Some(MemoryAddr {
+            base: Some(reg),
+            index: None,
+            scale: 1,
+            disp: 0,
+        });
+    }
+
+    // Just [disp] (absolute)
+    let disp = if inner.starts_with("0x") {
+        i32::from_str_radix(&inner[2..], 16).ok()?
+    } else {
+        inner.parse::<i32>().ok()?
+    };
+
+    Some(MemoryAddr {
+        base: None,
+        index: None,
+        scale: 1,
+        disp,
+    })
 }
 
 pub fn parse_instruction(line: &str) -> Option<Instruction> {
@@ -96,6 +167,14 @@ pub fn parse_instruction(line: &str) -> Option<Instruction> {
                 "not" => Some(Instruction::Not(op)),
                 "call" => Some(Instruction::Call(op)),
                 "jmp" => Some(Instruction::Jmp(op)),
+                _ => unreachable!(),
+            }
+        }
+        "push" | "pop" => {
+            let op = parse_operand(rest)?;
+            match mnemonic.as_str() {
+                "push" => Some(Instruction::Push(op)),
+                "pop" => Some(Instruction::Pop(op)),
                 _ => unreachable!(),
             }
         }

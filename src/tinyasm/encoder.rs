@@ -89,6 +89,8 @@ pub enum Instruction {
     Jmp(Operand),
     Syscall,
     Ret,
+    Push(Operand),
+    Pop(Operand),
 }
 
 impl fmt::Display for Instruction {
@@ -110,6 +112,8 @@ impl fmt::Display for Instruction {
             Instruction::Jmp(op) => write!(f, "jmp {}", op),
             Instruction::Syscall => write!(f, "syscall"),
             Instruction::Ret => write!(f, "ret"),
+            Instruction::Push(op) => write!(f, "push {}", op),
+            Instruction::Pop(op) => write!(f, "pop {}", op),
         }
     }
 }
@@ -132,6 +136,8 @@ pub fn encode_instruction(instr: Instruction, bytes: &mut Vec<u8>) -> Result<(),
         Instruction::Jmp(op) => encode_jmp(op, bytes)?,
         Instruction::Syscall => bytes.extend_from_slice(&[0x0F, 0x05]),
         Instruction::Ret => bytes.push(0xC3),
+        Instruction::Push(op) => encode_push(op, bytes)?,
+        Instruction::Pop(op) => encode_pop(op, bytes)?,
     }
     Ok(())
 }
@@ -234,6 +240,59 @@ fn encode_jmp(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
                 op
             )));
         }
+    }
+    Ok(())
+}
+
+fn encode_push(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match op {
+        Operand::Reg(reg) => {
+            // PUSH r64 -> 50 + rd
+            if reg.is_extended() {
+                encode_rex(false, None, None, Some(reg), bytes);
+            }
+            bytes.push(0x50 + reg.code());
+        }
+        Operand::Imm32(imm) => {
+            // PUSH imm32 -> 68 id
+            bytes.push(0x68);
+            bytes.extend_from_slice(&imm.to_le_bytes());
+        }
+        Operand::Mem(mem) => {
+            // PUSH r/m64 -> FF /6
+            let (modrm, sib, disp_size) = encode_mem_parts(6, false, mem, bytes)?;
+            bytes.push(0xFF);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_size, bytes);
+        }
+        _ => return Err(EncodeError::UnsupportedOperand(format!("PUSH {}", op))),
+    }
+    Ok(())
+}
+
+fn encode_pop(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match op {
+        Operand::Reg(reg) => {
+            // POP r64 -> 58 + rd
+            if reg.is_extended() {
+                encode_rex(false, None, None, Some(reg), bytes);
+            }
+            bytes.push(0x58 + reg.code());
+        }
+        Operand::Mem(mem) => {
+            // POP r/m64 -> 8F /0
+            let (modrm, sib, disp_size) = encode_mem_parts(0, false, mem, bytes)?;
+            bytes.push(0x8F);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_size, bytes);
+        }
+        _ => return Err(EncodeError::UnsupportedOperand(format!("POP {}", op))),
     }
     Ok(())
 }
