@@ -14,7 +14,7 @@ A custom Operating System written in Rust, targeting the x86_64 UEFI architectur
 - **NVMe Support**: Native driver for generic NVMe SSDs.
 - **User Mode**: Secure transition from Kernel to User mode with Ring 3 privilege isolation.
 - **System Calls**: Robust syscall interface for user-kernel communication (print, keyboard, shutdown, etc.).
-- **Inline Assembly**: just inline assembly
+- **TinyASM (JIT Assembler)**: A custom-built assembler and JIT engine allowing dynamic execution of x86_64 assembly directly from the shell.
 ## 🛠️ Prerequisites
 
 To build and run this OS, you need the following tools installed:
@@ -48,5 +48,25 @@ Once the system boots, you will be dropped into an interactive shell.
 - `history`: Show command history.
 - `clear`: Clear the screen.
 - `shutdown`: Cleanly shut down the system (powers off QEMU).
-- `asm`:execute inline assembly.
+- `asm <instruction>`: Execute x86_64 assembly instructions dynamically.
+
+### ⌨️ TinyASM (Inline Assembly)
+
+The OS includes a lightweight JIT assembler called **TinyASM**. It allows you to write and execute x86_64 assembly instructions directly in the shell.
+
+**Key Features:**
+- **Dynamic JIT**: Parses, encodes, and executes machine code in real-time.
+- **Support for Multiple Instructions**: Use `;` to separate multiple instructions.
+- **Return Value**: The shell prints the value of the `rax` register after execution.
+
+**Usage Examples:**
+
+```bash
+# Basic arithmetic
+asm mov rax, 10; add rax, 20;ret
+# Result: 30
+
+# System call example (Shutdown)
+asm mov rax, 10; syscall;ret
+```
 

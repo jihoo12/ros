@@ -38,12 +38,18 @@ pub fn parse_operand(s: &str) -> Option<Operand> {
     // Try parsing as immediate (hex or decimal)
     if s.starts_with("0x") {
         if let Ok(val) = u64::from_str_radix(&s[2..], 16) {
+            if val <= 0xFFFF_FFFF {
+                return Some(Operand::Imm32(val as i32));
+            } else {
+                return Some(Operand::Imm64(val));
+            }
+        }
+    } else {
+        if let Ok(val) = s.parse::<i32>() {
+            return Some(Operand::Imm32(val));
+        } else if let Ok(val) = s.parse::<u64>() {
             return Some(Operand::Imm64(val));
         }
-    } else if let Ok(val) = s.parse::<u64>() {
-        return Some(Operand::Imm64(val));
-    } else if let Ok(val) = s.parse::<i32>() {
-        return Some(Operand::Imm32(val));
     }
 
     // TODO: Support memory operands if needed

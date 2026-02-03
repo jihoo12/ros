@@ -153,10 +153,9 @@ impl Shell {
                     let mut machine_code = alloc::vec::Vec::new();
                     print("Encoding...\n");
                     for inst in instrs.iter() {
-                        if let Err(_) = encode_instruction(*inst, &mut machine_code) {
-                            print("Encoding error: ");
-                            // Assuming EncodeError has some way to be printed or just generic error
-                            print("\n");
+                        if let Err(e) = encode_instruction(*inst, &mut machine_code) {
+                            let msg = alloc::format!("Encoding error: {}\n", e);
+                            print(&msg);
                             return;
                         }
                     }
