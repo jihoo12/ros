@@ -160,16 +160,55 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let bar_type = (device.bar0 >> 1) & 0x3;
 
             if bar_type == 2 {
-                // 64-bit address
                 xhci_base_phys |= (device.bar1 as u64) << 32;
             }
-            let flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_CACHE_DISABLE;
+
+            // Map xHCI MMIO (with cache disable)
+            let mmio_flags =
+                memory::PAGE_WRITABLE | memory::PAGE_PRESENT | memory::PAGE_CACHE_DISABLE;
             for i in 0..16 {
-                let offset = i * 4096;
-                let phys = xhci_base_phys + offset;
-                memory::map_page(pml4, phys, phys, flags, &mut allocator);
+                let phys = xhci_base_phys + i * 4096;
+                memory::map_page(pml4, phys, phys, mmio_flags, &mut allocator);
             }
 
+            // Map xHCI DMA/static buffers (no cache disable)
+            let dma_flags = memory::PAGE_WRITABLE | memory::PAGE_PRESENT;
+
+            // Single-page statics
+            let single_page_statics: &[u64] = &[
+                core::ptr::addr_of!(xhci::COMMAND_RING_BUFFER) as u64,
+                core::ptr::addr_of!(xhci::DCBAA_BUFFER) as u64,
+                core::ptr::addr_of!(xhci::EVENT_RING_SEGMENT_TABLE) as u64,
+                core::ptr::addr_of!(xhci::EVENT_RING_BUFFER) as u64,
+                core::ptr::addr_of!(xhci::INPUT_CONTEXT_BUFFER) as u64,
+                core::ptr::addr_of!(xhci::USB_DATA_BUFFER) as u64,
+            ];
+            for &addr in single_page_statics {
+                memory::map_page(pml4, addr, addr, dma_flags, &mut allocator);
+            }
+
+            // Multi-page statics
+            let multi_page_statics: &[(u64, usize)] = &[
+                (
+                    core::ptr::addr_of!(xhci::DEVICE_CONTEXT_BUFFERS) as u64,
+                    core::mem::size_of::<xhci::DeviceContextBuffer>(),
+                ),
+                (
+                    core::ptr::addr_of!(xhci::EP0_TR_BUFFERS) as u64,
+                    core::mem::size_of::<[xhci::TransferRingBuffer; 64]>(),
+                ),
+                (
+                    core::ptr::addr_of!(xhci::KEYBOARD_TR_BUFFERS) as u64,
+                    core::mem::size_of::<xhci::KeyboardTrBuffers>(),
+                ),
+            ];
+            for &(base, size) in multi_page_statics {
+                let pages = (size + 4095) / 4096;
+                for i in 0..pages as u64 {
+                    let addr = base + i * 4096;
+                    memory::map_page(pml4, addr, addr, dma_flags, &mut allocator);
+                }
+            }
             xhci::init(device);
         }
     } else {

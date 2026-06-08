@@ -194,8 +194,8 @@ static mut EP0_TRANSFER_RINGS: [Option<TransferRing>; 64] = [const { None }; 64]
 static mut KEYBOARD_TRANSFER_RINGS: [Option<TransferRing>; 64] = [const { None }; 64];
 
 #[repr(align(4096))]
-struct TransferRingBuffer([Trb; 256]);
-static mut EP0_TR_BUFFERS: [TransferRingBuffer; 64] = [const {
+pub struct TransferRingBuffer([Trb; 256]);
+pub static mut EP0_TR_BUFFERS: [TransferRingBuffer; 64] = [const {
     TransferRingBuffer(
         [Trb {
             param: 0,
@@ -206,8 +206,8 @@ static mut EP0_TR_BUFFERS: [TransferRingBuffer; 64] = [const {
 }; 64];
 
 #[repr(align(4096))]
-struct KeyboardTrBuffers([[Trb; 256]; 64]);
-static mut KEYBOARD_TR_BUFFERS: KeyboardTrBuffers = KeyboardTrBuffers(
+pub struct KeyboardTrBuffers([[Trb; 256]; 64]);
+pub static mut KEYBOARD_TR_BUFFERS: KeyboardTrBuffers = KeyboardTrBuffers(
     [[Trb {
         param: 0,
         status: 0,
@@ -282,17 +282,17 @@ pub struct XhciContext {
 static mut XHCI_CTX: Option<XhciContext> = None;
 
 #[repr(align(4096))]
-struct AlignedPage([u8; 4096]);
+pub struct AlignedPage([u8; 4096]);
 
-static mut COMMAND_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
-static mut DCBAA_BUFFER: AlignedPage = AlignedPage([0; 4096]);
-static mut EVENT_RING_SEGMENT_TABLE: AlignedPage = AlignedPage([0; 4096]);
-static mut EVENT_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+pub static mut COMMAND_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+pub static mut DCBAA_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+pub static mut EVENT_RING_SEGMENT_TABLE: AlignedPage = AlignedPage([0; 4096]);
+pub static mut EVENT_RING_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 
 // Device Contexts for up to 64 slots. 1024 bytes each.
 #[repr(align(4096))]
-struct DeviceContextBuffer([DeviceContext; 64]);
-static mut DEVICE_CONTEXT_BUFFERS: DeviceContextBuffer = DeviceContextBuffer(
+pub struct DeviceContextBuffer([DeviceContext; 64]);
+pub static mut DEVICE_CONTEXT_BUFFERS: DeviceContextBuffer = DeviceContextBuffer(
     [const {
         DeviceContext {
             slot: SlotContext {
@@ -407,8 +407,8 @@ const HID_ASCII_TABLE: [u8; 128] = {
 };
 
 // Input Context for command execution (one at a time is fine for now)
-static mut INPUT_CONTEXT_BUFFER: AlignedPage = AlignedPage([0; 4096]);
-static mut USB_DATA_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+pub static mut INPUT_CONTEXT_BUFFER: AlignedPage = AlignedPage([0; 4096]);
+pub static mut USB_DATA_BUFFER: AlignedPage = AlignedPage([0; 4096]);
 
 pub unsafe fn init(device: PciDevice) {
     println!("xHCI: Initializing...");
@@ -498,8 +498,10 @@ pub unsafe fn init(device: PciDevice) {
     );
 
     unsafe {
-        core::ptr::write_bytes(erst_base, 0, 4096);
-        core::ptr::write_bytes(event_ring_base, 0, 4096);
+        println!("XHCI: start write bytes to erst_base");
+        core::ptr::write_bytes(erst_base as *mut u8, 0, 4096);
+        println!("XHCI: writing");
+        core::ptr::write_bytes(event_ring_base as *mut u8, 0, 4096);
     }
 
     let erst_entry = unsafe { &mut *erst_base };

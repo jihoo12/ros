@@ -66,30 +66,30 @@ pub struct IdtPointer {
     base: u64,
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 pub struct InterruptFrame {
-    pub r15: u64,
-    pub r14: u64,
-    pub r13: u64,
-    pub r12: u64,
-    pub r11: u64,
-    pub r10: u64,
-    pub r9: u64,
-    pub r8: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub rdx: u64,
-    pub rcx: u64,
-    pub rbx: u64,
-    pub rax: u64,
-    pub int_no: u64,
-    pub err_code: u64,
-    pub rip: u64,
-    pub cs: u64,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub ss: u64,
+    pub r15: u64,      // RSP+0   (last pushed)
+    pub r14: u64,      // RSP+8
+    pub r13: u64,      // RSP+16
+    pub r12: u64,      // RSP+24
+    pub r11: u64,      // RSP+32
+    pub r10: u64,      // RSP+40
+    pub r9: u64,       // RSP+48
+    pub r8: u64,       // RSP+56
+    pub rsi: u64,      // RSP+64
+    pub rdi: u64,      // RSP+72
+    pub rbp: u64,      // RSP+80
+    pub rdx: u64,      // RSP+88
+    pub rcx: u64,      // RSP+96
+    pub rbx: u64,      // RSP+104
+    pub rax: u64,      // RSP+112
+    pub int_no: u64,   // RSP+120  <-- should be $33
+    pub err_code: u64, // RSP+128  <-- should be $0
+    pub rip: u64,      // RSP+136  (CPU pushed)
+    pub cs: u64,       // RSP+144
+    pub rflags: u64,   // RSP+152
+    pub rsp: u64,      // RSP+160
+    pub ss: u64,       // RSP+168
 }
 
 static mut IDT: [IdtEntry; 256] = [IdtEntry {
@@ -213,73 +213,72 @@ const EXCEPTION_MESSAGES: [&str; 32] = [
 ];
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
-    let frame = unsafe { &*frame };
-
-    // Safety: Global writer access is unsafe. We use addr_of_mut! to avoid creating an intermediate
-    // reference that violates Rust 2024 static_mut_refs rules.
-    #[allow(static_mut_refs)]
-    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
-        let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
-        let _ = write!(writer, "INTERRUPT: {:#x} ", frame.int_no);
-
-        if (frame.int_no as usize) < EXCEPTION_MESSAGES.len() {
-            let _ = writeln!(writer, "({})", EXCEPTION_MESSAGES[frame.int_no as usize]);
-        } else {
-            let _ = writeln!(writer, "");
-        }
-
-        let _ = writeln!(writer, "ERROR CODE: {:#x}", frame.err_code);
-        let _ = writeln!(writer, "RIP: {:#x}", frame.rip);
-        let _ = writeln!(
-            writer,
-            "RAX: {:#x}  RBX: {:#x}  RCX: {:#x}  RDX: {:#x}",
-            frame.rax, frame.rbx, frame.rcx, frame.rdx
-        );
-        let _ = writeln!(
-            writer,
-            "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}",
-            frame.rsi, frame.rdi, frame.rbp, frame.rsp
-        );
-
-        if frame.int_no == 14 {
-            // Page Fault
-            let cr2: u64;
-            unsafe {
-                asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
-            }
-            let _ = writeln!(writer, "CR2 (ADDR): {:#x}", cr2);
-        }
-    }
-
-    loop {
-        unsafe {
-            asm!("hlt", options(nomem, nostack, preserves_flags));
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn irq_handler(frame: *mut InterruptFrame) {
-    let frame = unsafe { &*frame };
-    let irq = frame.int_no - 32;
+    // Use read_unaligned for every field access since frame may not be 8-aligned
+    let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
+    let irq = int_no - 32;
 
     match irq {
-        0 => {
-            // Timer (TODO)
+        0 => { /* Timer */ }
+        1 => {
+            //
         }
         _ => {
-            // Create a scope to manage writer lifetime
             #[allow(static_mut_refs)]
-            // Safety: Global writer access
             if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
                 let _ = writeln!(writer, "Unknown IRQ: {}", irq);
             }
         }
     }
 
-    unsafe {
-        crate::pic::notify_eoi(irq as u8);
+    unsafe { crate::pic::notify_eoi(irq as u8) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn exception_handler(frame: *mut InterruptFrame) {
+    let int_no = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).int_no)) };
+    let err_code = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).err_code)) };
+    let rip = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rip)) };
+    let rsp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rsp)) };
+    let rax = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rax)) };
+    let rbx = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rbx)) };
+    let rcx = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rcx)) };
+    let rdx = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rdx)) };
+    let rsi = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rsi)) };
+    let rdi = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rdi)) };
+    let rbp = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*frame).rbp)) };
+
+    #[allow(static_mut_refs)]
+    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+        let _ = writeln!(writer, "\nEXCEPTION OCCURRED!");
+        let _ = write!(writer, "INTERRUPT: {:#x} ", int_no);
+        if (int_no as usize) < EXCEPTION_MESSAGES.len() {
+            let _ = writeln!(writer, "({})", EXCEPTION_MESSAGES[int_no as usize]);
+        } else {
+            let _ = writeln!(writer, "");
+        }
+        let _ = writeln!(writer, "ERROR CODE: {:#x}", err_code);
+        let _ = writeln!(writer, "RIP: {:#x}", rip);
+        let _ = writeln!(writer, "RAX: {:#x}  RBX: {:#x}  RCX: {:#x}  RDX: {:#x}", rax, rbx, rcx, rdx);
+        let _ = writeln!(writer, "RSI: {:#x}  RDI: {:#x}  RBP: {:#x}  RSP: {:#x}", rsi, rdi, rbp, rsp);
+
+        if int_no == 14 {
+            let cr2: u64;
+            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+            let _ = writeln!(writer, "CR2 (ADDR): {:#x}", cr2);
+        }
+    }
+
+    loop {
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack, preserves_flags)); }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn debug_print_int_no(frame: *mut u8, val: u64) {
+    #[allow(static_mut_refs)]
+    if let Some(writer) = unsafe { (*core::ptr::addr_of_mut!(GLOBAL_WRITER)).as_mut() } {
+        let _ = writeln!(writer, "DEBUG: RSP={:#x}, offset120={:#x}", frame as u64, val);
     }
 }
 
@@ -348,6 +347,15 @@ IRQ 1, 33
 
 .global irq_common
 irq_common:
+    # Fix potential RSP misalignment from kernel-mode interrupt.
+    # The CPU does not align RSP when interrupting CPL=0 code.
+    # If RSP is not 8-byte aligned here, adjust it.
+    testq $4, %rsp
+    jz irq_common_aligned
+    subq $4, %rsp
+    jmp irq_common_aligned
+
+irq_common_aligned:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -388,6 +396,11 @@ irq_common:
 
 .global isr_common
 isr_common:
+    testq $4, %rsp
+    jz isr_common_aligned
+    subq $4, %rsp
+
+isr_common_aligned:
     pushq %rax
     pushq %rbx
     pushq %rcx
