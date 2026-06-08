@@ -8,3 +8,4 @@ nvme.img
 image.bin
 wakamo1.jpg
 .venv
+qemu.log
