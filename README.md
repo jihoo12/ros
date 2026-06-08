@@ -1,4 +1,4 @@
-# Rust UEFI OS
+# kaguyaos
 
 A custom Operating System written in Rust, targeting the x86_64 UEFI architecture. This project demonstrates key OS concepts including UEFI booting, graphical user interface, user-mode execution, system calls, and device driver support (NVMe & xHCI).
 
@@ -31,6 +31,7 @@ Use the provided helper script to compile the kernel, create the disk image, and
 
 ```bash
 nix-shell # if you use nix
+export OVMF_BIOS="/usr/share/ovmf/OVMF.fd" # if you don't use nix
 ./run.sh
 ```
 
