@@ -8,9 +8,11 @@ fi
 qemu-system-x86_64 \
     -bios /usr/share/ovmf/OVMF.fd \
     -drive format=raw,file=fat:rw:esp \
-    -drive file=nvme.img,if=none,id=nvm \
+    -drive file=nvme.img,if=none,id=nvm,format=raw \
     -device nvme,serial=deadbeef,drive=nvm \
-    -device qemu-xhci,id=xhci \
-    -device usb-kbd,bus=xhci.0 \
+    -device qemu-xhci,id=xhci,msi=off,msix=off \
     -net none \
-    -serial stdio
+    -serial stdio \
+    -d int,cpu_reset \
+    -no-reboot \
+    -D qemu.log
