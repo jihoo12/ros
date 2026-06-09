@@ -27,7 +27,7 @@ impl Shell {
         print("Type 'help' for commands. Use Arrow Keys for history.\n");
 
         loop {
-            print("> ");
+            print("kaguya> ");
             let line = input();
 
             if line.is_empty() {
