@@ -127,12 +127,18 @@ impl Shell {
         if let Some(cmd) = parts.next() {
             match cmd {
                 "help" => {
-                    print("Commands: help, echo, history, clear, shutdown, asm, c\n");
+                    print("Commands: help, echo, history, clear, shutdown, asm, c, fsformat, fsls, fswrite, fsread, fsrm\n");
                     print("  asm <instr>          - assemble and run a single instruction\n");
                     print("  asm                  - enter multi-line asm mode\n");
                     print("  Use ';' to separate multiple instructions inline\n");
                     print("  c <code>             - JIT-compile and run a tiny C function\n");
                     print("  c                    - enter multi-line C mode\n");
+                    print("  fsformat             - format the NVMe drive with SimpleFS\n");
+                    print("  fsls                 - list files in the filesystem\n");
+                    print("  fswrite <file> <msg> - write a file with text message (inline)\n");
+                    print("  fswrite <file>       - write a file in multi-line mode\n");
+                    print("  fsread <file>        - read and display a file's contents\n");
+                    print("  fsrm <file>          - delete a file from the filesystem\n");
                     print("  Example: c uint64_t f() { return 42; }\n");
                 }
                 "echo" => {
@@ -171,6 +177,121 @@ impl Shell {
                 }
                 "clear" => {
                     unsafe { syscall(12, 0, 0, 0, 0, 0, 0) };
+                }
+                "fsformat" => {
+                    match crate::std::fs_format() {
+                        Ok(_) => print("Filesystem formatted successfully.\n"),
+                        Err(e) => {
+                            let msg = alloc::format!("Error formatting filesystem: {}\n", e);
+                            print(&msg);
+                        }
+                    }
+                }
+                "fsls" => {
+                    let mut buf = [crate::std::SyscallFileEntry {
+                        name: [0; 47],
+                        name_len: 0,
+                        size: 0,
+                        start_block: 0,
+                    }; 128];
+                    match crate::std::fs_list_files(&mut buf) {
+                        Ok(count) => {
+                            if count == 0 {
+                                print("No files found.\n");
+                            } else {
+                                print("Name                           Size (Bytes)   Start Block\n");
+                                print("---------------------------------------------------------\n");
+                                for i in 0..count {
+                                    let entry = &buf[i];
+                                    let name_str = alloc::string::String::from_utf8_lossy(&entry.name[..entry.name_len as usize]).into_owned();
+                                    let msg = alloc::format!("{:<30} {:<14} {}\n", name_str, entry.size, entry.start_block);
+                                    print(&msg);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let msg = alloc::format!("Error listing files: {}\n", e);
+                            print(&msg);
+                        }
+                    }
+                }
+                "fswrite" => {
+                    let mut filename = "";
+                    if let Some(name) = parts.next() {
+                        filename = name;
+                    }
+                    if filename.is_empty() {
+                        print("Usage:\n");
+                        print("  fswrite <filename> <content> - write content inline\n");
+                        print("  fswrite <filename>           - enter multi-line mode\n");
+                    } else {
+                        // Gather remaining parts as content
+                        let mut content = alloc::vec::Vec::new();
+                        for part in parts {
+                            if !content.is_empty() {
+                                content.push(b' ');
+                            }
+                            content.extend_from_slice(part.as_bytes());
+                        }
+                        if content.is_empty() {
+                            self.run_multiline_write(filename);
+                        } else {
+                            match crate::std::fs_write(filename, &content) {
+                                Ok(_) => print("File written successfully.\n"),
+                                Err(e) => {
+                                    let msg = alloc::format!("Error writing file: {}\n", e);
+                                    print(&msg);
+                                }
+                            }
+                        }
+                    }
+                }
+                "fsread" => {
+                    if let Some(filename) = parts.next() {
+                        let mut size_buf = [];
+                        match crate::std::fs_read(filename, &mut size_buf) {
+                            Ok(size) => {
+                                let mut data = alloc::vec![0u8; size];
+                                match crate::std::fs_read(filename, &mut data) {
+                                    Ok(_) => {
+                                        match core::str::from_utf8(&data) {
+                                            Ok(s) => {
+                                                print(s);
+                                                print("\n");
+                                            }
+                                            Err(_) => {
+                                                let msg = alloc::format!("<binary data, {} bytes>\n", data.len());
+                                                print(&msg);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let msg = alloc::format!("Error reading file: {}\n", e);
+                                        print(&msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let msg = alloc::format!("Error reading file: {}\n", e);
+                                print(&msg);
+                            }
+                        }
+                    } else {
+                        print("Usage: fsread <filename>\n");
+                    }
+                }
+                "fsrm" => {
+                    if let Some(filename) = parts.next() {
+                        match crate::std::fs_rm(filename) {
+                            Ok(_) => print("File deleted successfully.\n"),
+                            Err(e) => {
+                                let msg = alloc::format!("Error deleting file: {}\n", e);
+                                print(&msg);
+                            }
+                        }
+                    } else {
+                        print("Usage: fsrm <filename>\n");
+                    }
                 }
                 _ => {
                     print("Unknown command: ");
@@ -270,6 +391,41 @@ impl Shell {
             }
             Err(_) => {
                 print("JIT allocation error.\n");
+            }
+        }
+    }
+
+    fn run_multiline_write(&self, filename: &str) {
+        print("Entering multi-line write mode. Type your text line by line.\n");
+        print("Type 'done' on its own line to write to file.\n");
+        print("Type 'cancel' to abort.\n");
+
+        let mut lines: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+
+        loop {
+            print("write> ");
+            let line = input();
+            let line = line.trim();
+
+            match line {
+                "done" => {
+                    let combined = lines.join("\n");
+                    match crate::std::fs_write(filename, combined.as_bytes()) {
+                        Ok(_) => print("File written successfully.\n"),
+                        Err(e) => {
+                            let msg = alloc::format!("Error writing file: {}\n", e);
+                            print(&msg);
+                        }
+                    }
+                    break;
+                }
+                "cancel" => {
+                    print("Write cancelled.\n");
+                    break;
+                }
+                _ => {
+                    lines.push(String::from(line));
+                }
             }
         }
     }

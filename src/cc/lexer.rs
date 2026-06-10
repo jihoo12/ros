@@ -6,12 +6,14 @@ use alloc::format;
 pub enum Token {
     Ident(String),
     Number(u64),
+    StringLiteral(String),
     LParen,
     RParen,
     LBrace,
     RBrace,
     Semicolon,
     Return,
+    Equal,
 }
 
 pub fn lex(src: &str) -> Result<Vec<Token>, String> {
@@ -26,6 +28,36 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             '{' => { tokens.push(Token::LBrace);    chars.next(); }
             '}' => { tokens.push(Token::RBrace);    chars.next(); }
             ';' => { tokens.push(Token::Semicolon); chars.next(); }
+            '=' => { tokens.push(Token::Equal);     chars.next(); }
+            '"' => {
+                chars.next(); // Consume opening quote
+                let mut content = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c == '"' {
+                        chars.next(); // Consume closing quote
+                        break;
+                    } else if c == '\\' {
+                        chars.next();
+                        if let Some(escaped) = chars.next() {
+                            match escaped {
+                                'n' => content.push('\n'),
+                                'r' => content.push('\r'),
+                                't' => content.push('\t'),
+                                '\\' => content.push('\\'),
+                                '"' => content.push('"'),
+                                other => {
+                                    content.push('\\');
+                                    content.push(other);
+                                }
+                            }
+                        }
+                    } else {
+                        content.push(c);
+                        chars.next();
+                    }
+                }
+                tokens.push(Token::StringLiteral(content));
+            }
             '0'..='9' => {
                 let mut num = String::new();
                 while let Some(&d) = chars.peek() {

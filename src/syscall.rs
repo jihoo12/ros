@@ -211,6 +211,26 @@ extern "sysv64" fn syscall_dispatcher_impl(
             // sys_realloc(ptr, size, align)
             sys_realloc(arg1, arg2, arg3)
         }
+        14 => {
+            // sys_fsformat() -> i32
+            sys_fsformat() as usize
+        }
+        15 => {
+            // sys_fsls(buf, max_entries) -> isize
+            sys_fsls(arg1, arg2) as usize
+        }
+        16 => {
+            // sys_fswrite(filename_ptr, filename_len, content_ptr, content_len) -> i32
+            sys_fswrite(arg1, arg2, arg3, arg4) as usize
+        }
+        17 => {
+            // sys_fsread(filename_ptr, filename_len, buffer_ptr, buffer_len) -> isize
+            sys_fsread(arg1, arg2, arg3, arg4) as usize
+        }
+        18 => {
+            // sys_fsrm(filename_ptr, filename_len) -> i32
+            sys_fsrm(arg1, arg2) as usize
+        }
         _ => {
             // Unknown syscall
             let _ = crate::println!("Unknown syscall: {}", id);
@@ -365,4 +385,103 @@ unsafe fn try_syscall(
         );
     }
     ret
+}
+
+#[repr(C)]
+pub struct SyscallFileEntry {
+    pub name: [u8; 47],
+    pub name_len: u8,
+    pub size: u64,
+    pub start_block: u64,
+}
+
+fn sys_fsformat() -> i32 {
+    match crate::fs::format() {
+        Ok(()) => 0,
+        Err(e) => e.code(),
+    }
+}
+
+fn sys_fsls(buffer_ptr: usize, max_entries: usize) -> isize {
+    match crate::fs::list_files() {
+        Ok(files) => {
+            if buffer_ptr != 0 && max_entries > 0 {
+                let dest = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        buffer_ptr as *mut SyscallFileEntry,
+                        max_entries,
+                    )
+                };
+                let count = files.len().min(max_entries);
+                for i in 0..count {
+                    let mut name_buf = [0u8; 47];
+                    let name_bytes = files[i].name.as_bytes();
+                    let len = name_bytes.len().min(47);
+                    name_buf[..len].copy_from_slice(&name_bytes[..len]);
+
+                    dest[i] = SyscallFileEntry {
+                        name: name_buf,
+                        name_len: len as u8,
+                        size: files[i].size,
+                        start_block: files[i].start_block,
+                    };
+                }
+            }
+            files.len() as isize
+        }
+        Err(e) => e.code() as isize,
+    }
+}
+
+fn sys_fswrite(
+    filename_ptr: usize,
+    filename_len: usize,
+    content_ptr: usize,
+    content_len: usize,
+) -> i32 {
+    let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
+    let Ok(filename) = core::str::from_utf8(name_slice) else {
+        return crate::fs::FsError::InvalidArgument.code();
+    };
+    let content = unsafe { core::slice::from_raw_parts(content_ptr as *const u8, content_len) };
+    match crate::fs::create_file(filename, content) {
+        Ok(()) => 0,
+        Err(e) => e.code(),
+    }
+}
+
+fn sys_fsread(
+    filename_ptr: usize,
+    filename_len: usize,
+    buffer_ptr: usize,
+    buffer_len: usize,
+) -> isize {
+    let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
+    let Ok(filename) = core::str::from_utf8(name_slice) else {
+        return crate::fs::FsError::InvalidArgument.code() as isize;
+    };
+    match crate::fs::read_file(filename) {
+        Ok(data) => {
+            if buffer_ptr == 0 {
+                return data.len() as isize;
+            }
+            let copy_len = data.len().min(buffer_len);
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr as *mut u8, copy_len);
+            }
+            copy_len as isize
+        }
+        Err(e) => e.code() as isize,
+    }
+}
+
+fn sys_fsrm(filename_ptr: usize, filename_len: usize) -> i32 {
+    let name_slice = unsafe { core::slice::from_raw_parts(filename_ptr as *const u8, filename_len) };
+    let Ok(filename) = core::str::from_utf8(name_slice) else {
+        return crate::fs::FsError::InvalidArgument.code();
+    };
+    match crate::fs::delete_file(filename) {
+        Ok(()) => 0,
+        Err(e) => e.code(),
+    }
 }

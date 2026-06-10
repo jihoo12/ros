@@ -41,3 +41,87 @@ pub unsafe fn sys_free(ptr: *mut u8) {
 pub unsafe fn sys_realloc(ptr: *mut u8, size: usize, align: usize) -> *mut u8 {
     unsafe { syscall(13, ptr as usize, size, align, 0, 0, 0) as *mut u8 }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SyscallFileEntry {
+    pub name: [u8; 47],
+    pub name_len: u8,
+    pub size: u64,
+    pub start_block: u64,
+}
+
+pub fn fs_format() -> Result<(), i32> {
+    let ret = unsafe { syscall(14, 0, 0, 0, 0, 0, 0) } as i32;
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(ret)
+    }
+}
+
+pub fn fs_list_files(buf: &mut [SyscallFileEntry]) -> Result<usize, i32> {
+    let ret = unsafe { syscall(15, buf.as_mut_ptr() as usize, buf.len(), 0, 0, 0, 0) } as isize;
+    if ret >= 0 {
+        Ok(ret as usize)
+    } else {
+        Err(ret as i32)
+    }
+}
+
+pub fn fs_write(filename: &str, content: &[u8]) -> Result<(), i32> {
+    let ret = unsafe {
+        syscall(
+            16,
+            filename.as_ptr() as usize,
+            filename.len(),
+            content.as_ptr() as usize,
+            content.len(),
+            0,
+            0,
+        )
+    } as i32;
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(ret)
+    }
+}
+
+pub fn fs_read(filename: &str, buf: &mut [u8]) -> Result<usize, i32> {
+    let ret = unsafe {
+        syscall(
+            17,
+            filename.as_ptr() as usize,
+            filename.len(),
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+            0,
+            0,
+        )
+    } as isize;
+    if ret >= 0 {
+        Ok(ret as usize)
+    } else {
+        Err(ret as i32)
+    }
+}
+
+pub fn fs_rm(filename: &str) -> Result<(), i32> {
+    let ret = unsafe {
+        syscall(
+            18,
+            filename.as_ptr() as usize,
+            filename.len(),
+            0,
+            0,
+            0,
+            0,
+        )
+    } as i32;
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(ret)
+    }
+}

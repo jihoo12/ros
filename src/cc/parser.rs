@@ -1,11 +1,3 @@
-/// Parses the token stream produced by the lexer.
-///
-/// Understands one or more functions of the form:
-///
-///   uint64_t <name>() { return <integer>; }
-///
-/// Extend this file to support richer statements, expressions, and types.
-
 use alloc::string::{String, ToString};
 use alloc::format;
 use alloc::vec::Vec;
@@ -13,15 +5,28 @@ use alloc::collections::BTreeMap;
 
 use super::lexer::Token;
 
-/// A parsed function: its name and the literal value it returns.
-pub struct Function {
-    pub name: String,
-    pub return_value: u64,
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Number(u64),
+    Variable(String),
+    Call(String),
 }
 
-/// Parse all top-level functions from the token stream.
-/// Returns a map of function name → return value.
-pub fn parse_functions(tokens: &[Token]) -> Result<BTreeMap<String, u64>, String> {
+#[derive(Debug, Clone)]
+pub enum Stmt {
+    VarDecl { name: String, val: Expr },
+    Assign { name: String, val: Expr },
+    Asm(String),
+    Return(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: String,
+    pub body: Vec<Stmt>,
+}
+
+pub fn parse_functions(tokens: &[Token]) -> Result<BTreeMap<String, Function>, String> {
     let mut map = BTreeMap::new();
     let mut i = 0;
 
@@ -30,15 +35,83 @@ pub fn parse_functions(tokens: &[Token]) -> Result<BTreeMap<String, u64>, String
         if map.contains_key(&func.name) {
             return Err(format!("Duplicate function: '{}'", func.name));
         }
-        map.insert(func.name, func.return_value);
+        map.insert(func.name.clone(), func);
     }
 
     Ok(map)
 }
 
-/// Parse a single function and advance `i` past it.
+fn parse_expr(tokens: &[Token], i: &mut usize) -> Result<Expr, String> {
+    match tokens.get(*i) {
+        Some(Token::Number(n)) => {
+            *i += 1;
+            Ok(Expr::Number(*n))
+        }
+        Some(Token::Ident(name)) => {
+            let name = name.clone();
+            *i += 1;
+            // Check if it's a function call (followed by LParen)
+            if let Some(Token::LParen) = tokens.get(*i) {
+                *i += 1; // Consume LParen
+                expect(tokens, i, &Token::RParen)?;
+                Ok(Expr::Call(name))
+            } else {
+                Ok(Expr::Variable(name))
+            }
+        }
+        other => Err(format!("Expected expression, got {:?}", other)),
+    }
+}
+
+fn parse_stmt(tokens: &[Token], i: &mut usize) -> Result<Stmt, String> {
+    match tokens.get(*i) {
+        Some(Token::Return) => {
+            *i += 1;
+            let expr = parse_expr(tokens, i)?;
+            expect(tokens, i, &Token::Semicolon)?;
+            Ok(Stmt::Return(expr))
+        }
+        Some(Token::Ident(keyword)) if keyword == "asm" || keyword == "__asm__" => {
+            *i += 1;
+            expect(tokens, i, &Token::LParen)?;
+            let asm_str = match tokens.get(*i) {
+                Some(Token::StringLiteral(s)) => {
+                    let val = s.clone();
+                    *i += 1;
+                    val
+                }
+                other => return Err(format!("Expected string literal inside asm block, got {:?}", other)),
+            };
+            expect(tokens, i, &Token::RParen)?;
+            expect(tokens, i, &Token::Semicolon)?;
+            Ok(Stmt::Asm(asm_str))
+        }
+        Some(Token::Ident(type_or_var)) => {
+            let type_or_var = type_or_var.clone();
+            *i += 1;
+            
+            // Check if it's a variable declaration: e.g. "uint64_t x = ..."
+            if let Some(Token::Ident(var_name)) = tokens.get(*i) {
+                let var_name = var_name.clone();
+                *i += 1;
+                expect(tokens, i, &Token::Equal)?;
+                let expr = parse_expr(tokens, i)?;
+                expect(tokens, i, &Token::Semicolon)?;
+                Ok(Stmt::VarDecl { name: var_name, val: expr })
+            } else {
+                // Otherwise it's an assignment: e.g. "x = ..."
+                expect(tokens, i, &Token::Equal)?;
+                let expr = parse_expr(tokens, i)?;
+                expect(tokens, i, &Token::Semicolon)?;
+                Ok(Stmt::Assign { name: type_or_var, val: expr })
+            }
+        }
+        other => Err(format!("Expected statement, got {:?}", other)),
+    }
+}
+
 fn parse_function(tokens: &[Token], i: &mut usize) -> Result<Function, String> {
-    // Return-type identifier (we accept any ident, e.g. `uint64_t`)
+    // Return-type identifier
     match tokens.get(*i) {
         Some(Token::Ident(_)) => *i += 1,
         _ => return Err("Expected return-type identifier".to_string()),
@@ -50,29 +123,32 @@ fn parse_function(tokens: &[Token], i: &mut usize) -> Result<Function, String> {
         _ => return Err("Expected function name".to_string()),
     };
 
-    // ()
     expect(tokens, i, &Token::LParen)?;
     expect(tokens, i, &Token::RParen)?;
 
-    // { return <n>; }
     expect(tokens, i, &Token::LBrace)?;
-    expect(tokens, i, &Token::Return)?;
 
-    let return_value = match tokens.get(*i) {
-        Some(Token::Number(n)) => { let v = *n; *i += 1; v }
-        _ => return Err("Expected integer literal after 'return'".to_string()),
-    };
+    let mut body = Vec::new();
+    while let Some(tok) = tokens.get(*i) {
+        if tok == &Token::RBrace {
+            break;
+        }
+        body.push(parse_stmt(tokens, i)?);
+    }
 
-    expect(tokens, i, &Token::Semicolon)?;
     expect(tokens, i, &Token::RBrace)?;
 
-    Ok(Function { name, return_value })
+    Ok(Function { name, body })
 }
 
-/// Legacy single-function entry point (kept for compatibility).
 pub fn parse_return_value(tokens: &[Token]) -> Result<u64, String> {
     let map = parse_functions(tokens)?;
-    map.into_values().next().ok_or_else(|| "No functions found".to_string())
+    let first_func = map.into_values().next().ok_or_else(|| "No functions found".to_string())?;
+    if let Some(Stmt::Return(Expr::Number(n))) = first_func.body.first() {
+        Ok(*n)
+    } else {
+        Err("Expected a simple return of integer literal".to_string())
+    }
 }
 
 fn expect(tokens: &[Token], i: &mut usize, expected: &Token) -> Result<(), String> {

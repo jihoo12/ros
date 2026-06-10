@@ -13,7 +13,6 @@ pub mod codegen;
 
 use alloc::string::String;
 use crate::tinyasm::jit::JitMemory;
-use crate::alloc::string::ToString;
 
 /// Compile all functions in `src`, locate `main`, JIT-compile it, and execute it.
 ///
@@ -42,14 +41,11 @@ pub fn compile_and_run(src: &str) -> Result<u64, String> {
     // 1. Lex
     let tokens = lexer::lex(src)?;
 
-    // 2. Parse all functions and look up main
+    // 2. Parse all functions
     let functions = parser::parse_functions(&tokens)?;
-    let &return_value = functions
-        .get("main")
-        .ok_or_else(|| "No 'main' function found".to_string())?;
 
-    // 3. Emit machine code for main's return value
-    let code = codegen::emit_return_u64(return_value);
+    // 3. Emit machine code
+    let code = codegen::compile_program(&functions)?;
 
     // 4. Load into executable memory and call
     let mut mem = JitMemory::new(code.len())?;
