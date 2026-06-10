@@ -11,7 +11,7 @@ use uefi::*;
 use crate::shell::shell;
 pub mod std;
 pub mod tinyasm;
-
+pub mod cc;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

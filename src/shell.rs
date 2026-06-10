@@ -47,6 +47,15 @@ impl Shell {
                     // Multi-line asm mode
                     self.run_multiline_asm();
                 }
+            } else if line == "c" || line.starts_with("c ") || line.starts_with("c\t") {
+                self.add_history(line.as_bytes());
+
+                let rest = line["c".len()..].trim();
+                if !rest.is_empty() {
+                    self.eval_c(rest);
+                } else {
+                    self.run_multiline_c();
+                }
             } else {
                 self.add_history(line.as_bytes());
                 self.eval(line);
@@ -118,10 +127,13 @@ impl Shell {
         if let Some(cmd) = parts.next() {
             match cmd {
                 "help" => {
-                    print("Commands: help, echo, history, clear, shutdown, asm\n");
+                    print("Commands: help, echo, history, clear, shutdown, asm, c\n");
                     print("  asm <instr>          - assemble and run a single instruction\n");
                     print("  asm                  - enter multi-line asm mode\n");
                     print("  Use ';' to separate multiple instructions inline\n");
+                    print("  c <code>             - JIT-compile and run a tiny C function\n");
+                    print("  c                    - enter multi-line C mode\n");
+                    print("  Example: c uint64_t f() { return 42; }\n");
                 }
                 "echo" => {
                     let mut first = true;
@@ -165,6 +177,55 @@ impl Shell {
                     print(cmd);
                     print(". Type 'help' for available commands.\n");
                 }
+            }
+        }
+    }
+
+    fn run_multiline_c(&mut self) {
+        print("Entering multi-line C mode. Type your function line by line.\n");
+        print("Type 'done' on its own line to compile and run.\n");
+        print("Type 'cancel' to abort.\n");
+
+        let mut lines: alloc::vec::Vec<String> = alloc::vec::Vec::new();
+
+        loop {
+            print("c> ");
+            let line = input();
+            let line = line.trim();
+
+            match line {
+                "done" => {
+                    if lines.is_empty() {
+                        print("No code entered.\n");
+                    } else {
+                        let combined = lines.join(" ");
+                        self.eval_c(&combined);
+                    }
+                    break;
+                }
+                "cancel" => {
+                    print("C cancelled.\n");
+                    break;
+                }
+                "" => {}
+                _ => {
+                    lines.push(String::from(line));
+                }
+            }
+        }
+    }
+
+    fn eval_c(&self, src: &str) {
+        use crate::cc::cjit::compile_and_run;
+
+        match compile_and_run(src) {
+            Ok(result) => {
+                let msg = alloc::format!("Result: {}\n", result);
+                print(&msg);
+            }
+            Err(e) => {
+                let msg = alloc::format!("C JIT error: {}\n", e);
+                print(&msg);
             }
         }
     }
