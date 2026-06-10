@@ -1,5 +1,7 @@
 # kaguyaos
 
+## need update there is no asm keyword anymore
+
 A custom Operating System written in Rust, targeting the x86_64 UEFI architecture. This project demonstrates key OS concepts including UEFI booting, graphical user interface, user-mode execution, system calls, and device driver support (NVMe & xHCI).
 
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
