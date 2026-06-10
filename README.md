@@ -103,7 +103,7 @@ To write, compile, and run a C application inside kaguyaos:
    ```bash
    fswrite my_prog.c
    ```
-2. Enter the C source code (type `done` on its own line when finished):
+2. Enter the C source code (type `esc` when finished):
    ```c
    uint64_t print_char(uint64_t c) {
        // Push character to the stack and pass stack pointer to sys_print (Syscall 1)
