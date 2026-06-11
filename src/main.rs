@@ -66,6 +66,7 @@ mod gdt;
 mod interrupts;
 mod io;
 mod memory;
+mod network;
 mod nvme;
 mod pci;
 mod pic;
@@ -228,6 +229,14 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
         }
     } else {
         println!("failed to find xHCI device\n")
+    }
+    if let Some(device) = pci::get_ethernet_device() {
+        unsafe {
+            let pml4 = memory::get_table_mut(pml4_phys);
+            network::init(pml4, &mut allocator, device);
+        }
+    } else {
+        println!("No Ethernet device found!");
     }
     // Initialize Heap
     // Allocate 128 pages (512KB) for the heap
