@@ -465,27 +465,60 @@ unsafe fn start_ap(lapic_base: u64, dest_id: u8) {
 #[unsafe(no_mangle)]
 pub unsafe extern "sysv64" fn ap_entry() {
     unsafe {
-        // 1. Load shared GDT & IDT (already initialised by BSP).
-        crate::gdt::init();
-        crate::interrupts::init_idt();
+        let my_apic_id = current_apic_id();
+        let mut my_cpu_index = 0;
+        let mut my_percpu = core::ptr::null_mut();
 
-        // 2. Enable this AP's Local APIC.
-        let lapic_base = lapic_base_from_msr();
-        lapic_enable(lapic_base);
+        // Find our slot in PERCPU_DATA_SLOTS
+        for i in 0..=MAX_AP_COUNT {
+            if PERCPU_DATA_SLOTS[i].apic_id == my_apic_id {
+                my_cpu_index = PERCPU_DATA_SLOTS[i].cpu_index;
+                my_percpu = &raw mut PERCPU_DATA_SLOTS[i];
+                break;
+            }
+        }
 
-        // 3. Signal online.
-        core::ptr::write_volatile(
-            (TRAMPOLINE_PHYS as usize + TRAMP_OFF_ONLINE) as *mut u32,
-            1,
-        );
+        if !my_percpu.is_null() {
+            set_percpu_data(my_percpu);
+            wrmsr(MSR_IA32_KERNEL_GS_BASE, my_percpu as u64);
 
-        // 4. Count this AP.
-        AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
+            // 1. Load GDT & IDT for this CPU
+            crate::gdt::init_cpu(my_cpu_index as usize);
+            crate::interrupts::init_idt();
 
-        // 5. Enable interrupts and park.
-        core::arch::asm!("sti");
-        loop {
-            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            // 2. Enable this AP's Local APIC.
+            let lapic_base = lapic_base_from_msr();
+            lapic_enable(lapic_base);
+
+            // 3. Setup syscalls on this AP
+            crate::syscall::init_cpu();
+
+            // 4. Signal online.
+            core::ptr::write_volatile(
+                (TRAMPOLINE_PHYS as usize + TRAMP_OFF_ONLINE) as *mut u32,
+                1,
+            );
+
+            // 5. Count this AP.
+            AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
+
+            // 6. Enter scheduler loop for AP
+            crate::scheduler::run_ap_scheduler();
+        } else {
+            // Fallback
+            crate::gdt::init();
+            crate::interrupts::init_idt();
+            let lapic_base = lapic_base_from_msr();
+            lapic_enable(lapic_base);
+            core::ptr::write_volatile(
+                (TRAMPOLINE_PHYS as usize + TRAMP_OFF_ONLINE) as *mut u32,
+                1,
+            );
+            AP_ONLINE_COUNT.fetch_add(1, Ordering::Release);
+            core::arch::asm!("sti");
+            loop {
+                core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+            }
         }
     }
 }
@@ -555,9 +588,18 @@ pub unsafe fn start_all_aps(madt: &MadtInfo, bsp_apic_id: u8) {
             ap_index, apic_id, stack_top
         );
 
+        // Setup per-CPU data slot first
+        unsafe {
+            let ap_percpu = &raw mut PERCPU_DATA_SLOTS[ap_index + 1];
+            (*ap_percpu).apic_id = apic_id;
+            (*ap_percpu).cpu_index = (ap_index + 1) as u8;
+            (*ap_percpu).kernel_stack = stack_top;
+            (*ap_percpu).current_task_index = usize::MAX;
+        }
+
         // Write handshake params for this AP.
         unsafe {
-            write_trampoline_params(ap_entry as u64, cr3, stack_top);
+            write_trampoline_params(ap_entry as *const () as u64, cr3, stack_top);
         }
 
         // Fire INIT-SIPI-SIPI.
@@ -719,13 +761,23 @@ pub unsafe fn lapic_base_from_msr() -> u64 {
 /// Per-CPU data stored at GS:0.
 #[repr(C)]
 pub struct PercpuData {
-    /// Physical APIC ID of this CPU.
+    pub kernel_stack: u64, // gs:[0]
+    pub user_stack: u64,   // gs:[8]
+    pub scratch: u64,      // gs:[16]
+
     pub apic_id: u8,
-    /// Logical 0-based CPU index.
     pub cpu_index: u8,
-    /// Kernel stack top for this CPU (used to restore RSP0 in TSS on reschedule).
-    pub kernel_stack_top: u64,
+    pub current_task_index: usize,
 }
+
+pub static mut PERCPU_DATA_SLOTS: [PercpuData; MAX_AP_COUNT + 1] = [const { PercpuData {
+    kernel_stack: 0,
+    user_stack: 0,
+    scratch: 0,
+    apic_id: 0,
+    cpu_index: 0,
+    current_task_index: usize::MAX,
+} }; MAX_AP_COUNT + 1];
 
 /// Set the GS base for the current CPU to `ptr`, making per-CPU data
 /// accessible via `GS:0`.

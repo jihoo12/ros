@@ -391,7 +391,7 @@ pub unsafe fn enter_usermode(user_rsp: u64) -> ! {
 
     // RFLAGS: Interrupts enabled (0x200) | Reserved (0x2) = 0x202
     let rflags: u64 = 0x202;
-    let rip = user_main as u64;
+    let rip = user_main as *const () as u64;
 
     unsafe {
         asm!(
