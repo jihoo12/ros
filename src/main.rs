@@ -238,6 +238,7 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
             let pml4 = memory::get_table_mut(pml4_phys);
             network::init(pml4, &mut allocator, device);
         }
+        unsafe { network::set_ip_address([10,0,2,15]) };
         let ip = network::get_ip_address();
         let mac = unsafe { network::get_mac_address() };
         println!("ip:{:?}", ip);

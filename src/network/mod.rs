@@ -1,5 +1,7 @@
 mod driver;
 mod e1000;
+mod helper;
+mod ipv4;
 
 use crate::memory::{FrameAllocator, PageTable, PAGE_CACHE_DISABLE, PAGE_PRESENT, PAGE_WRITABLE};
 use crate::pci::{self, PciDevice};
