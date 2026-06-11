@@ -65,7 +65,9 @@ pub struct Tss {
     iomap_base: u16,
 }
 
-static mut TSS: Tss = Tss {
+const MAX_CPUS: usize = 64;
+
+static mut TSS_ARR: [Tss; MAX_CPUS] = [Tss {
     reserved1: 0,
     rsp0: 0,
     rsp1: 0,
@@ -81,39 +83,39 @@ static mut TSS: Tss = Tss {
     reserved3: 0,
     reserved4: 0,
     iomap_base: 0,
-};
+}; MAX_CPUS];
 
-static mut GDT: [GdtEntry; 7] = [GdtEntry {
+static mut GDT_ARR: [[GdtEntry; 7]; MAX_CPUS] = [[GdtEntry {
     limit_low: 0,
     base_low: 0,
     base_middle: 0,
     access: 0,
     granularity: 0,
     base_high: 0,
-}; 7];
+}; 7]; MAX_CPUS];
 
-static mut GDT_PTR: GdtPointer = GdtPointer { limit: 0, base: 0 };
+static mut GDT_PTR_ARR: [GdtPointer; MAX_CPUS] = [GdtPointer { limit: 0, base: 0 }; MAX_CPUS];
 
-unsafe fn set_gdt_entry(index: usize, base: u32, limit: u32, access: u8, gran: u8) {
+unsafe fn set_gdt_entry_cpu(cpu_index: usize, index: usize, base: u32, limit: u32, access: u8, gran: u8) {
     unsafe {
-        GDT[index].base_low = (base & 0xFFFF) as u16;
-        GDT[index].base_middle = ((base >> 16) & 0xFF) as u8;
-        GDT[index].base_high = ((base >> 24) & 0xFF) as u8;
+        GDT_ARR[cpu_index][index].base_low = (base & 0xFFFF) as u16;
+        GDT_ARR[cpu_index][index].base_middle = ((base >> 16) & 0xFF) as u8;
+        GDT_ARR[cpu_index][index].base_high = ((base >> 24) & 0xFF) as u8;
 
-        GDT[index].limit_low = (limit & 0xFFFF) as u16;
-        GDT[index].granularity = ((limit >> 16) & 0x0F) as u8;
+        GDT_ARR[cpu_index][index].limit_low = (limit & 0xFFFF) as u16;
+        GDT_ARR[cpu_index][index].granularity = ((limit >> 16) & 0x0F) as u8;
 
-        GDT[index].granularity |= gran & 0xF0;
-        GDT[index].access = access;
+        GDT_ARR[cpu_index][index].granularity |= gran & 0xF0;
+        GDT_ARR[cpu_index][index].access = access;
     }
 }
 
-unsafe fn set_gdt_system_entry(index: usize, base: u64, limit: u32, access: u8, gran: u8) {
+unsafe fn set_gdt_system_entry_cpu(cpu_index: usize, index: usize, base: u64, limit: u32, access: u8, gran: u8) {
     unsafe {
-        set_gdt_entry(index, base as u32, limit, access, gran);
+        set_gdt_entry_cpu(cpu_index, index, base as u32, limit, access, gran);
     }
 
-    let high_base_offset = (core::ptr::addr_of!(GDT) as u64) + ((index + 1) * 8) as u64;
+    let high_base_offset = (core::ptr::addr_of!(GDT_ARR[cpu_index]) as u64) + ((index + 1) * 8) as u64;
     let high_base_ptr = high_base_offset as *mut u32;
 
     unsafe {
@@ -122,48 +124,47 @@ unsafe fn set_gdt_system_entry(index: usize, base: u64, limit: u32, access: u8, 
     }
 }
 
-pub unsafe fn init() {
+pub unsafe fn init_cpu(cpu_index: usize) {
     unsafe {
-        // Clear TSS
-        // Rust static initialization already zeroes it, but we set iomap_base
-        TSS.iomap_base = size_of::<Tss>() as u16;
+        TSS_ARR[cpu_index].iomap_base = size_of::<Tss>() as u16;
 
         // Set up IST1 for Double Fault
         let stack_ptr = core::ptr::addr_of_mut!(DOUBLE_FAULT_STACK) as *const u8;
         let stack_top = stack_ptr.add(4096) as u64;
-        TSS.ist1 = stack_top;
+        TSS_ARR[cpu_index].ist1 = stack_top;
 
         // Null descriptor
-        set_gdt_entry(0, 0, 0, 0, 0);
+        set_gdt_entry_cpu(cpu_index, 0, 0, 0, 0, 0);
 
         // Kernel Code Segment: Access 0x9A, Granularity 0xAF (64-bit)
-        set_gdt_entry(1, 0, 0xFFFFFFFF, 0x9A, 0xAF);
+        set_gdt_entry_cpu(cpu_index, 1, 0, 0xFFFFFFFF, 0x9A, 0xAF);
 
         // Kernel Data Segment: Access 0x92, Granularity 0xCF
-        set_gdt_entry(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
+        set_gdt_entry_cpu(cpu_index, 2, 0, 0xFFFFFFFF, 0x92, 0xCF);
 
-        // User Data Segment: Access 0xF2 (Present, Ring 3, Data, Writable)
-        set_gdt_entry(3, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+        // User Data Segment: Access 0xF2
+        set_gdt_entry_cpu(cpu_index, 3, 0, 0xFFFFFFFF, 0xF2, 0xCF);
 
-        // User Code Segment: Access 0xFA (Present, Ring 3, Code, Readable)
-        set_gdt_entry(4, 0, 0xFFFFFFFF, 0xFA, 0xAF);
+        // User Code Segment: Access 0xFA
+        set_gdt_entry_cpu(cpu_index, 4, 0, 0xFFFFFFFF, 0xFA, 0xAF);
 
-        // TSS Segment: Access 0x89 (Present, Ring 0, Available TSS)
-        set_gdt_system_entry(
+        // TSS Segment: Access 0x89
+        set_gdt_system_entry_cpu(
+            cpu_index,
             5,
-            &raw const TSS as *const _ as u64,
+            &raw const TSS_ARR[cpu_index] as *const _ as u64,
             (size_of::<Tss>() - 1) as u32,
             0x89,
             0x00,
         );
 
-        GDT_PTR.limit = (size_of::<[GdtEntry; 7]>() - 1) as u16;
-        GDT_PTR.base = &raw const GDT as *const _ as u64;
+        GDT_PTR_ARR[cpu_index].limit = (size_of::<[GdtEntry; 7]>() - 1) as u16;
+        GDT_PTR_ARR[cpu_index].base = &raw const GDT_ARR[cpu_index] as *const _ as u64;
 
         // Load GDT
         core::arch::asm!(
             "lgdt [{}]",
-            in(reg) &raw const GDT_PTR,
+            in(reg) &raw const GDT_PTR_ARR[cpu_index],
             options(readonly, nostack, preserves_flags)
         );
 
@@ -193,12 +194,24 @@ pub unsafe fn init() {
     }
 }
 
+pub unsafe fn init() {
+    unsafe {
+        init_cpu(0);
+    }
+}
+
 pub unsafe fn set_tss_stack(stack: u64) {
     unsafe {
-        TSS.rsp0 = stack;
+        TSS_ARR[0].rsp0 = stack;
     }
 }
 
 pub unsafe fn get_tss_stack() -> u64 {
-    unsafe { TSS.rsp0 }
+    unsafe { TSS_ARR[0].rsp0 }
+}
+
+pub unsafe fn set_tss_stack_cpu(cpu_index: usize, stack: u64) {
+    unsafe {
+        TSS_ARR[cpu_index].rsp0 = stack;
+    }
 }

@@ -19,13 +19,13 @@ pub struct Task {
     pub stack_bottom: u64, // For deallocation reference (user stack if usermode)
     pub status: TaskStatus,
     pub kernel_stack_bottom: u64,
-    pub gs_base: u64, // Pointer to KernelGsBase struct
+    pub kernel_stack_top: u64,
+    pub gs_base: u64, // User GS base value
     pub exit_code: usize,
 }
 
 pub struct Scheduler {
     tasks: Vec<Task>,
-    current_task_index: usize,
 }
 
 static mut SCHEDULER: Option<Scheduler> = None;
@@ -39,7 +39,6 @@ pub unsafe fn init() {
     unsafe {
         SCHEDULER = Some(Scheduler {
             tasks: Vec::new(),
-            current_task_index: 0,
         });
     }
 
@@ -50,7 +49,8 @@ pub unsafe fn init() {
         stack_bottom: 0,
         status: TaskStatus::Running,
         kernel_stack_bottom: 0,
-        gs_base: unsafe { crate::syscall::get_global_gs_base() },
+        kernel_stack_top: 0,
+        gs_base: 0,
         exit_code: 0,
     };
 
@@ -69,15 +69,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
             let kernel_stack_bottom = crate::allocator::alloc(stack_size) as u64;
             let kernel_stack_top = kernel_stack_bottom + stack_size as u64;
 
-            // 2. Setup KernelGsBase
-            let kgs_base = Box::new(crate::syscall::KernelGsBase {
-                kernel_stack: kernel_stack_top,
-                user_stack: user_rsp, // Initial user RSP
-                scratch: 0,
-            });
-            let gs_base_ptr = Box::into_raw(kgs_base) as u64;
-
-            // 3. Setup Stack Frame for IRETQ (to enter usermode)
+            // 2. Setup Stack Frame for IRETQ (to enter usermode)
             // We'll simulate a stack that context_switch can jump into.
             // When we switch TO this task, context_switch will 'ret' to our entry logic.
 
@@ -103,7 +95,7 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
 
             // Now push caller-saved registers that context_switch expects
             sp = sp.sub(1);
-            *sp = user_task_trampoline as u64; // RIP for context_switch 'ret'
+            *sp = user_task_trampoline as *const () as u64; // RIP for context_switch 'ret'
             sp = sp.sub(1);
             *sp = 0; // RBP
             sp = sp.sub(1);
@@ -123,7 +115,8 @@ pub fn add_new_user_task(entry_point: u64, user_rsp: u64, stack_size: usize) -> 
                 stack_bottom: user_rsp - stack_size as u64,
                 status: TaskStatus::Ready,
                 kernel_stack_bottom,
-                gs_base: gs_base_ptr,
+                kernel_stack_top,
+                gs_base: 0,
                 exit_code: 0,
             };
 
@@ -189,7 +182,8 @@ pub fn add_new_task(entry_point: extern "C" fn(), stack_bottom: u64, stack_size:
                 stack_top: sp as u64, // The saved RSP
                 stack_bottom,
                 status: TaskStatus::Ready,
-                kernel_stack_bottom: 0,
+                kernel_stack_bottom: stack_bottom,
+                kernel_stack_top: stack_top,
                 gs_base: 0,
                 exit_code: 0,
             };
@@ -203,10 +197,16 @@ pub fn switch_task() {
     unsafe {
         let guard = SCHEDULER_LOCK.lock();
         if let Some(scheduler) = SCHEDULER.as_mut() {
-            let current_index = scheduler.current_task_index;
+            let percpu = crate::processor::get_percpu_data();
+            if percpu.is_null() {
+                // PercpuData not initialized yet, just return
+                return;
+            }
+            let current_index = (*percpu).current_task_index;
 
             // Round-robin: find next Ready task
-            let mut next_index = (current_index + 1) % scheduler.tasks.len();
+            let start_index = if current_index == usize::MAX { 0 } else { current_index };
+            let mut next_index = (start_index + 1) % scheduler.tasks.len();
             let mut found = false;
 
             // Loop once to find a ready task
@@ -215,19 +215,12 @@ pub fn switch_task() {
                     found = true;
                     break;
                 }
-                // If current task is running, it's also a candidate (if it's the only one, or we just cycle back)
-                // But wait, if we are currently Running, we should be marked Ready if we yield?
-                // Or we just stay Running if it's round robin.
-
-                // Let's adhere to: Only switch to Ready tasks.
-                // The current task is "Running". If we yield, it becomes "Ready".
-
                 next_index = (next_index + 1) % scheduler.tasks.len();
             }
 
             if !found {
                 // If no other task is Ready, check if current is still runnable.
-                if scheduler.tasks[current_index].status == TaskStatus::Terminated {
+                if current_index != usize::MAX && scheduler.tasks[current_index].status == TaskStatus::Terminated {
                     // We are terminated and no one else to run? deadlock/halt
                     core::mem::drop(guard);
                     crate::println!("All tasks could be terminated, or deadlock. Halting.");
@@ -245,23 +238,42 @@ pub fn switch_task() {
             }
 
             // Update statuses
-            let old_index = current_index;
-
-            if scheduler.tasks[old_index].status == TaskStatus::Running {
-                scheduler.tasks[old_index].status = TaskStatus::Ready;
+            if current_index != usize::MAX {
+                let old_index = current_index;
+                if scheduler.tasks[old_index].status == TaskStatus::Running {
+                    scheduler.tasks[old_index].status = TaskStatus::Ready;
+                }
             }
 
             scheduler.tasks[next_index].status = TaskStatus::Running;
-            scheduler.current_task_index = next_index;
+            (*percpu).current_task_index = next_index;
 
-            let old_stack_ref = &mut scheduler.tasks[old_index].stack_top as *mut u64;
+            let mut dummy_sp = 0u64;
+            let old_stack_ref = if current_index != usize::MAX {
+                &mut scheduler.tasks[current_index].stack_top as *mut u64
+            } else {
+                &mut dummy_sp as *mut u64
+            };
             let new_stack = scheduler.tasks[next_index].stack_top;
-            let new_gs_base = scheduler.tasks[next_index].gs_base;
 
-            // Update Active GS Base (MSR_GS_BASE)
-            if new_gs_base != 0 {
-                wrmsr(0xC0000101, new_gs_base);
+            // Update CPU's active kernel stack in PercpuData (so syscalls on this CPU use it)
+            let new_kernel_stack_top = scheduler.tasks[next_index].kernel_stack_top;
+            if new_kernel_stack_top != 0 {
+                (*percpu).kernel_stack = new_kernel_stack_top;
+
+                // Update TSS stack for the current CPU
+                let cpu_index = (*percpu).cpu_index as usize;
+                crate::gdt::set_tss_stack_cpu(cpu_index, new_kernel_stack_top);
             }
+
+            // Save/Restore user GS base (inactive GS base when in kernel mode)
+            if current_index != usize::MAX {
+                let old_user_gs = crate::processor::rdmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE);
+                scheduler.tasks[current_index].gs_base = old_user_gs;
+            }
+
+            let new_user_gs = scheduler.tasks[next_index].gs_base;
+            crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, new_user_gs);
 
             // Drop SCHEDULER_LOCK immediately before context switch to prevent deadlock
             core::mem::drop(guard);
@@ -272,23 +284,20 @@ pub fn switch_task() {
     }
 }
 
-unsafe fn wrmsr(msr: u32, value: u64) {
-    let low = value as u32;
-    let high = (value >> 32) as u32;
-    unsafe {
-        asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nomem, nostack, preserves_flags));
-    }
-}
-
 pub fn terminate_task(exit_code: usize) {
     let guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_mut() {
-            let current_index = scheduler.current_task_index;
-            scheduler.tasks[current_index].status = TaskStatus::Terminated;
-            scheduler.tasks[current_index].exit_code = exit_code;
+            let percpu = crate::processor::get_percpu_data();
+            if !percpu.is_null() {
+                let current_index = (*percpu).current_task_index;
+                if current_index != usize::MAX {
+                    scheduler.tasks[current_index].status = TaskStatus::Terminated;
+                    scheduler.tasks[current_index].exit_code = exit_code;
 
-            crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
+                    crate::println!("Task {} terminated with exit code {}.", scheduler.tasks[current_index].id, exit_code);
+                }
+            }
 
             // Drop lock before calling switch_task which has its own lock!
             core::mem::drop(guard);
@@ -326,10 +335,15 @@ pub fn current_task_id() -> usize {
     let _guard = SCHEDULER_LOCK.lock();
     unsafe {
         if let Some(scheduler) = SCHEDULER.as_ref() {
-            scheduler.tasks[scheduler.current_task_index].id
-        } else {
-            0
+            let percpu = crate::processor::get_percpu_data();
+            if !percpu.is_null() {
+                let current_index = (*percpu).current_task_index;
+                if current_index != usize::MAX {
+                    return scheduler.tasks[current_index].id;
+                }
+            }
         }
+        0
     }
 }
 
@@ -362,5 +376,15 @@ pub fn get_task_exit_code(task_id: usize) -> usize {
             }
         }
         0
+    }
+}
+
+pub fn run_ap_scheduler() -> ! {
+    unsafe {
+        core::arch::asm!("sti");
+        loop {
+            switch_task();
+            core::arch::asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
     }
 }

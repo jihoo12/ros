@@ -38,58 +38,49 @@ struct AlignedStack([u8; 16384]);
 
 static mut SYSCALL_STACK: AlignedStack = AlignedStack([0; 16384]);
 
-pub unsafe fn init() {
+pub unsafe fn init_cpu() {
     unsafe {
         // 1. Enable SCE in EFER
-        let efer = rdmsr(MSR_EFER);
-        wrmsr(MSR_EFER, efer | EFER_SCE);
+        let efer = crate::processor::rdmsr(MSR_EFER);
+        crate::processor::wrmsr(MSR_EFER, efer | EFER_SCE);
 
         // 2. Setup STAR
         // Kernel Code is 0x08.
         // User Code is 0x20.
 
         let star_val: u64 = ((0x0010 as u64) << 48) | ((gdt::KERNEL_CODE_SEL as u64) << 32);
-        wrmsr(MSR_STAR, star_val);
+        crate::processor::wrmsr(MSR_STAR, star_val);
 
         // 3. Setup LSTAR (Target RIP)
-        let handler_addr = syscall_handler as u64;
-        wrmsr(MSR_LSTAR, handler_addr);
+        let handler_addr = syscall_handler as *const () as u64;
+        crate::processor::wrmsr(MSR_LSTAR, handler_addr);
 
         // 4. Setup SFMASK (RFLAGS mask)
         // Mask interrupts (bit 9, 0x200) so cli is automatic on entry
-        wrmsr(MSR_SFMASK, 0x200);
+        crate::processor::wrmsr(MSR_SFMASK, 0x200);
+    }
+}
 
-        // 5. Setup Kernel Stack via GS Base
-        // Use raw pointers to avoid creating references to static muts (which is error in Rust 2024)
-        // Use .0 on AlignedStack
+pub unsafe fn init() {
+    unsafe {
+        init_cpu();
+
+        // 5. Setup BSP's PercpuData slot 0
         let stack_ptr = core::ptr::addr_of_mut!(SYSCALL_STACK.0) as *mut u8;
         // Actually SYSCALL_STACK.0.len() is 16384.
         let stack_end = stack_ptr.add(16384) as u64;
 
-        let kgs_base = core::ptr::addr_of_mut!(KERNEL_GS_BASE);
-        (*kgs_base).kernel_stack = stack_end;
+        let bsp_percpu = &raw mut crate::processor::PERCPU_DATA_SLOTS[0];
+        (*bsp_percpu).kernel_stack = stack_end;
+        (*bsp_percpu).apic_id = crate::processor::current_apic_id();
+        (*bsp_percpu).cpu_index = 0;
+        (*bsp_percpu).current_task_index = 0; // BSP runs task 0 (main kernel task)
 
-        wrmsr(MSR_KERNEL_GS_BASE, kgs_base as u64);
+        crate::processor::set_percpu_data(bsp_percpu);
+        crate::processor::wrmsr(crate::processor::MSR_IA32_KERNEL_GS_BASE, bsp_percpu as u64);
 
         // Safety: Ensure TSS RSP0 is set so interrupts from user mode can switch stack
-        crate::gdt::set_tss_stack(stack_end);
-    }
-}
-
-unsafe fn rdmsr(msr: u32) -> u64 {
-    let low: u32;
-    let high: u32;
-    unsafe {
-        asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags));
-    }
-    ((high as u64) << 32) | (low as u64)
-}
-
-unsafe fn wrmsr(msr: u32, value: u64) {
-    let low = value as u32;
-    let high = (value >> 32) as u32;
-    unsafe {
-        asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nomem, nostack, preserves_flags));
+        crate::gdt::set_tss_stack_cpu(0, stack_end);
     }
 }
 
@@ -240,6 +231,10 @@ extern "sysv64" fn syscall_dispatcher_impl(
         20 => {
             // sys_get_task_exit_code(task_id) -> usize
             sys_get_task_exit_code(arg1)
+        }
+        21 => {
+            // sys_run_ap_scheduler()
+            sys_run_ap_scheduler();
         }
         _ => {
             // Unknown syscall
@@ -503,4 +498,8 @@ fn sys_get_task_status(task_id: usize) -> usize {
 
 fn sys_get_task_exit_code(task_id: usize) -> usize {
     crate::scheduler::get_task_exit_code(task_id)
+}
+
+fn sys_run_ap_scheduler() -> ! {
+    crate::scheduler::run_ap_scheduler();
 }

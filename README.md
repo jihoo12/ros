@@ -167,3 +167,4 @@ kaguyaos implements a robust system call interface over the standard AMD64 `sysc
 | **18**| `sys_fsrm` | `filename_ptr: usize, filename_len: usize` | Deletes a file from SimpleFS. |
 | **19**| `sys_get_task_status`| `task_id: usize` | Gets the status of the task (e.g. 2 for Terminated, 3 for Not Found). |
 | **20**| `sys_get_task_exit_code`| `task_id: usize` | Gets the exit code of a completed process. |
+| **21**| `sys_run_ap_scheduler`| None | Starts or enters the scheduler loop on the processor core. |
