@@ -1,12 +1,17 @@
 #![allow(dead_code)]
 
 use crate::memory::{FrameAllocator, PAGE_PRESENT, PAGE_WRITABLE};
+use crate::network::NetworkDriver;
 use crate::pci::PciDevice;
 use crate::println;
 use core::ptr::{addr_of_mut, read_volatile, write_volatile};
 
+const MMIO_SIZE: u64 = 128 * 1024;
 const RING_SIZE: usize = 16;
 const PACKET_BUF_SIZE: usize = 2048;
+
+const E1000_VENDOR: u16 = 0x8086;
+const E1000_DEVICE_82540EM: u16 = 0x100E;
 
 const REG_CTRL: u32 = 0x0000;
 const REG_STATUS: u32 = 0x0008;
@@ -122,6 +127,147 @@ static mut RX_PACKET_BUFFERS: RxPacketBuffers =
 static mut TX_PACKET_BUFFERS: TxPacketBuffers =
     TxPacketBuffers([[0; PACKET_BUF_SIZE]; RING_SIZE]);
 
+pub struct E1000;
+
+impl E1000 {
+    pub fn matches(device: &PciDevice) -> bool {
+        device.vendor_id == E1000_VENDOR && device.device_id == E1000_DEVICE_82540EM
+    }
+}
+
+impl NetworkDriver for E1000 {
+    fn name(&self) -> &'static str {
+        "e1000"
+    }
+
+    fn mmio_size(&self) -> u64 {
+        MMIO_SIZE
+    }
+
+    unsafe fn map_dma_buffers(
+        &self,
+        pml4: &mut crate::memory::PageTable,
+        allocator: &mut FrameAllocator,
+    ) {
+        let flags = PAGE_WRITABLE | PAGE_PRESENT;
+        let regions: &[(u64, usize)] = &[
+            (
+                addr_of_mut!(RX_DESC_RING) as u64,
+                core::mem::size_of::<RxDescRing>(),
+            ),
+            (
+                addr_of_mut!(TX_DESC_RING) as u64,
+                core::mem::size_of::<TxDescRing>(),
+            ),
+            (
+                addr_of_mut!(RX_PACKET_BUFFERS) as u64,
+                core::mem::size_of::<RxPacketBuffers>(),
+            ),
+            (
+                addr_of_mut!(TX_PACKET_BUFFERS) as u64,
+                core::mem::size_of::<TxPacketBuffers>(),
+            ),
+        ];
+
+        for &(base, size) in regions {
+            let pages = (size + 4095) / 4096;
+            for i in 0..pages as u64 {
+                let addr = base + i * 4096;
+                crate::memory::map_page(pml4, addr, addr, flags, allocator);
+            }
+        }
+    }
+
+    unsafe fn init(&mut self, device: PciDevice) {
+        let ctx = &mut *addr_of_mut!(E1000_CTX);
+
+        let bar = crate::pci::mmio_bar0(&device);
+
+        ctx.pci_dev = Some(device);
+        ctx.mmio = bar as *mut u8;
+        ctx.rx_next = 0;
+        ctx.tx_next = 0;
+
+        println!("e1000: MMIO at {:#x}", bar);
+
+        reset(ctx.mmio);
+        setup_mac(ctx.mmio);
+        setup_rx_ring(ctx.mmio);
+        setup_tx_ring(ctx.mmio);
+
+        write_reg(
+            ctx.mmio,
+            REG_CTRL,
+            read_reg(ctx.mmio, REG_CTRL) | CTRL_SLU,
+        );
+
+        let status = read_reg(ctx.mmio, REG_STATUS);
+        println!(
+            "e1000: link up, rx/tx rings ready (status={:#x})",
+            status
+        );
+    }
+
+    unsafe fn transmit(&mut self, data: &[u8]) -> bool {
+        let ctx = &mut *addr_of_mut!(E1000_CTX);
+        if ctx.mmio.is_null() {
+            return false;
+        }
+
+        if data.len() > PACKET_BUF_SIZE {
+            return false;
+        }
+
+        let idx = ctx.tx_next;
+        let tx_ring = &mut *addr_of_mut!(TX_DESC_RING);
+        let desc = &mut tx_ring.0[idx];
+
+        if (desc.status & TX_STATUS_DD) == 0 && desc.cmd != 0 {
+            return false;
+        }
+
+        let buf = &mut (*addr_of_mut!(TX_PACKET_BUFFERS)).0[idx];
+        buf[..data.len()].copy_from_slice(data);
+
+        desc.addr = buf.as_ptr() as u64;
+        desc.length = data.len() as u16;
+        desc.cmd = TX_CMD_EOP | TX_CMD_IFCS | TX_CMD_RS;
+        desc.status = 0;
+
+        ctx.tx_next = (idx + 1) % RING_SIZE;
+        write_reg(ctx.mmio, REG_TDT, ctx.tx_next as u32);
+
+        true
+    }
+
+    unsafe fn poll_rx(&mut self, out: &mut [u8]) -> usize {
+        let ctx = &mut *addr_of_mut!(E1000_CTX);
+        if ctx.mmio.is_null() {
+            return 0;
+        }
+
+        let idx = ctx.rx_next;
+        let rx_ring = &*addr_of_mut!(RX_DESC_RING);
+        let desc = &rx_ring.0[idx];
+
+        if (desc.status & RX_STATUS_DD) == 0 {
+            return 0;
+        }
+
+        let len = desc.length as usize;
+        let copy_len = len.min(out.len()).min(PACKET_BUF_SIZE);
+        let buf = &(*addr_of_mut!(RX_PACKET_BUFFERS)).0[idx];
+        out[..copy_len].copy_from_slice(&buf[..copy_len]);
+
+        let rx_ring_mut = &mut *addr_of_mut!(RX_DESC_RING);
+        rx_ring_mut.0[idx].status = 0;
+        write_reg(ctx.mmio, REG_RDT, idx as u32);
+
+        ctx.rx_next = (idx + 1) % RING_SIZE;
+        copy_len
+    }
+}
+
 unsafe fn read_reg(mmio: *mut u8, offset: u32) -> u32 {
     read_volatile(mmio.add(offset as usize) as *const u32)
 }
@@ -187,126 +333,4 @@ unsafe fn setup_tx_ring(mmio: *mut u8) {
 
     write_reg(mmio, REG_TIPG, 0x0060_080C);
     write_reg(mmio, REG_TCTL, TCTL_EN | TCTL_PSP | TCTL_CT | TCTL_COLD);
-}
-
-pub unsafe fn map_dma_buffers(
-    pml4: *mut crate::memory::PageTable,
-    allocator: &mut FrameAllocator,
-) {
-    let pml4 = &mut *pml4;
-    let flags = PAGE_WRITABLE | PAGE_PRESENT;
-    let regions: &[(u64, usize)] = &[
-        (addr_of_mut!(RX_DESC_RING) as u64, core::mem::size_of::<RxDescRing>()),
-        (addr_of_mut!(TX_DESC_RING) as u64, core::mem::size_of::<TxDescRing>()),
-        (
-            addr_of_mut!(RX_PACKET_BUFFERS) as u64,
-            core::mem::size_of::<RxPacketBuffers>(),
-        ),
-        (
-            addr_of_mut!(TX_PACKET_BUFFERS) as u64,
-            core::mem::size_of::<TxPacketBuffers>(),
-        ),
-    ];
-
-    for &(base, size) in regions {
-        let pages = (size + 4095) / 4096;
-        for i in 0..pages as u64 {
-            let addr = base + i * 4096;
-            crate::memory::map_page(pml4, addr, addr, flags, allocator);
-        }
-    }
-}
-
-pub unsafe fn init(device: PciDevice) {
-    let ctx = &mut *addr_of_mut!(E1000_CTX);
-
-    let bar = crate::pci::mmio_bar0(&device);
-
-    ctx.pci_dev = Some(device);
-    ctx.mmio = bar as *mut u8;
-    ctx.rx_next = 0;
-    ctx.tx_next = 0;
-
-    println!("e1000: MMIO at {:#x}", bar);
-
-    reset(ctx.mmio);
-    setup_mac(ctx.mmio);
-    setup_rx_ring(ctx.mmio);
-    setup_tx_ring(ctx.mmio);
-
-    write_reg(
-        ctx.mmio,
-        REG_CTRL,
-        read_reg(ctx.mmio, REG_CTRL) | CTRL_SLU,
-    );
-
-    let status = read_reg(ctx.mmio, REG_STATUS);
-    println!(
-        "e1000: link up, rx/tx rings ready (status={:#x})",
-        status
-    );
-}
-
-/// Copy a frame into the TX ring and kick the hardware.
-/// Returns false if the ring slot is still owned by the NIC.
-pub unsafe fn transmit(data: &[u8]) -> bool {
-    let ctx = &mut *addr_of_mut!(E1000_CTX);
-    if ctx.mmio.is_null() {
-        return false;
-    }
-
-    if data.len() > PACKET_BUF_SIZE {
-        return false;
-    }
-
-    let idx = ctx.tx_next;
-    let tx_ring = &mut *addr_of_mut!(TX_DESC_RING);
-    let desc = &mut tx_ring.0[idx];
-
-    if (desc.status & TX_STATUS_DD) == 0 && desc.cmd != 0 {
-        return false;
-    }
-
-    let buf = &mut (*addr_of_mut!(TX_PACKET_BUFFERS)).0[idx];
-    buf[..data.len()].copy_from_slice(data);
-
-    desc.addr = buf.as_ptr() as u64;
-    desc.length = data.len() as u16;
-    desc.cmd = TX_CMD_EOP | TX_CMD_IFCS | TX_CMD_RS;
-    desc.status = 0;
-
-    ctx.tx_next = (idx + 1) % RING_SIZE;
-    write_reg(ctx.mmio, REG_TDT, ctx.tx_next as u32);
-
-    true
-}
-
-/// Poll the RX ring for one completed descriptor.
-/// Returns the number of bytes copied into `out`, or 0 if nothing arrived.
-pub unsafe fn poll_rx(out: &mut [u8]) -> usize {
-    let ctx = &mut *addr_of_mut!(E1000_CTX);
-    if ctx.mmio.is_null() {
-        return 0;
-    }
-
-    let idx = ctx.rx_next;
-    let rx_ring = &*addr_of_mut!(RX_DESC_RING);
-    let desc = &rx_ring.0[idx];
-
-    if (desc.status & RX_STATUS_DD) == 0 {
-        return 0;
-    }
-
-    let len = desc.length as usize;
-    let copy_len = len.min(out.len()).min(PACKET_BUF_SIZE);
-    let buf = &(*addr_of_mut!(RX_PACKET_BUFFERS)).0[idx];
-    out[..copy_len].copy_from_slice(&buf[..copy_len]);
-
-    // Hand the descriptor back to hardware.
-    let rx_ring_mut = &mut *addr_of_mut!(RX_DESC_RING);
-    rx_ring_mut.0[idx].status = 0;
-    write_reg(ctx.mmio, REG_RDT, idx as u32);
-
-    ctx.rx_next = (idx + 1) % RING_SIZE;
-    copy_len
 }
