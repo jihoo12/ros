@@ -157,7 +157,7 @@ pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) 
                 let start = descriptor.PhysicalStart;
                 let end = start + (descriptor.NumberOfPages * PAGE_SIZE);
                 for addr in (start..end).step_by(PAGE_SIZE as usize) {
-                    unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
+                    unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
                 }
             }
             _ => {}
@@ -168,7 +168,7 @@ pub unsafe fn init_paging(boot_info: &BootInfo, allocator: &mut FrameAllocator) 
     let fb_base = boot_info.framebuffer_base;
     let fb_size = boot_info.framebuffer_size as u64;
     for addr in (fb_base..(fb_base + fb_size)).step_by(PAGE_SIZE as usize) {
-        unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE | PAGE_USER, allocator) };
+        unsafe { map_page(pml4, addr, addr, PAGE_WRITABLE, allocator) };
     }
 
     // 4. Load CR3
