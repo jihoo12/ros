@@ -272,7 +272,7 @@ fn sys_alloc(size: usize, align: usize) -> usize {
     // If align is 0, default to 8.
     let align = if align == 0 { 8 } else { align };
     match Layout::from_size_align(size, align) {
-        Ok(layout) => unsafe { crate::allocator::alloc_aligned(layout) as usize },
+        Ok(layout) => unsafe { crate::allocator::user_heap_alloc(layout) as usize },
         Err(_) => 0, // Allocation failed due to invalid layout
     }
 }
@@ -281,7 +281,7 @@ fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
     let align = if align == 0 { 8 } else { align };
     match Layout::from_size_align(size, align) {
         Ok(layout) => unsafe {
-            crate::allocator::realloc_aligned(ptr as *mut u8, layout, size) as usize
+            crate::allocator::user_heap_realloc(ptr as *mut u8, layout, size) as usize
         },
         Err(_) => 0,
     }
@@ -289,7 +289,7 @@ fn sys_realloc(ptr: usize, size: usize, align: usize) -> usize {
 
 fn sys_free(ptr: usize) {
     unsafe {
-        crate::allocator::free(ptr as *mut u8);
+        crate::allocator::user_heap_free(ptr as *mut u8);
     }
 }
 

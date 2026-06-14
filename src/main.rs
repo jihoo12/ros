@@ -26,7 +26,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         unsafe {
             core::arch::asm!(
                 "syscall",
-                in("rax") 1, // sys_print
+                in("rax") 0, // sys_print
                 in("rdi") msg.as_ptr(),
                 in("rsi") msg.len(),
                 out("rcx") _,
@@ -337,6 +337,55 @@ pub extern "sysv64" fn kernel_main(boot_info: &BootInfo) -> ! {
     }
 
     term::init();
+
+    // ── User heap ─────────────────────────────────────────────────────────
+    // A heap separate from the kernel heap, with pages mapped PAGE_USER so
+    // that sys_alloc / sys_free / sys_realloc can hand out pointers that
+    // user-mode tasks can actually dereference. PAGE_NO_EXECUTE prevents the
+    // heap from being used to run injected code.
+    //
+    // IMPORTANT: we get the *physical* frames from the frame allocator (same
+    // as the kernel heap), but we map them at a fixed HIGH virtual address
+    // rather than identity-mapping them. init.kef's loader places the user
+    // task's code and stack at low virtual addresses (e.g. around
+    // 0x100000-ish, 16KB stack); identity-mapping the heap's physical frames
+    // (which can themselves be low addresses) would reuse the SAME virtual
+    // addresses as the task's code/stack and silently overwrite those page
+    // table entries, corrupting the stack. Using a high, dedicated virtual
+    // base avoids any collision regardless of where load_kef places things.
+    const USER_HEAP_VIRT_BASE: u64 = 0x0000_7000_0000_0000;
+    let user_heap_pages = 128; // 512 KiB
+    let user_heap_phys_start = allocator
+        .allocate_frame()
+        .expect("Failed to allocate user heap start");
+    let mut user_current_addr = user_heap_phys_start;
+
+    for _ in 1..user_heap_pages {
+        let next_addr = allocator
+            .allocate_frame()
+            .expect("Failed to allocate user heap");
+        if next_addr != user_current_addr + 4096 {
+            panic!("User heap memory allocation failed: memory not contiguous!");
+        }
+        user_current_addr = next_addr;
+    }
+
+    unsafe {
+        let pml4 = memory::get_table_mut(pml4_phys);
+        let flags = memory::PAGE_WRITABLE | memory::PAGE_USER | memory::PAGE_NO_EXECUTE;
+        for i in 0..user_heap_pages as u64 {
+            let phys = user_heap_phys_start + i * 4096;
+            let virt = USER_HEAP_VIRT_BASE + i * 4096;
+            memory::map_page(pml4, virt, phys, flags, &mut allocator);
+        }
+        allocator::init_user_heap(USER_HEAP_VIRT_BASE as usize, (user_heap_pages * 4096) as usize);
+        println!(
+            "User heap mapped at {:#x}-{:#x} (phys {:#x})",
+            USER_HEAP_VIRT_BASE,
+            USER_HEAP_VIRT_BASE + (user_heap_pages * 4096) as u64,
+            user_heap_phys_start,
+        );
+    }
 
     // Initialize FAT filesystem & load init.kef
     let mut fs_ready = false;
