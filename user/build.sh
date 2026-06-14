@@ -16,7 +16,7 @@ rustc --target x86_64-unknown-none \
       -C link-arg=--oformat=binary \
       -O \
       -o user/init.kef \
-      user/init.rs
+      user/src/init.rs
 
 echo "✅ Successfully built user/init.kef!"
 ls -lh user/init.kef
