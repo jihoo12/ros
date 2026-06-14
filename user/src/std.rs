@@ -1,40 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    let msg = "\n=========================================\n\
-               🦀 Hello from Rust User Mode (Ring 3)! 🦀\n\
-               =========================================\n\
-               init.kef loaded and executed successfully.\n";
-    print(msg);
-
-    // Let's poll for keypress to shut down
-    print("Press any key to trigger shutdown...\n");
-
-    loop {
-        let key = read();
-        if key != 0 {
-            break;
-        }
-    }
-
-    print("\nShutting down the system. Goodbye!\n");
-    shutdown();
-}
-
-fn read() -> usize {
-    poll_xhci();
-    read_key()
-}
-
 #[inline(always)]
 unsafe fn syscall0(id: usize) -> usize {
     let ret: usize;
@@ -75,31 +41,31 @@ unsafe fn syscall2(id: usize, arg1: usize, arg2: usize) -> usize {
     ret
 }
 
-fn print(s: &str) {
+pub fn print(s: &str) {
     unsafe {
         syscall2(0, s.as_ptr() as usize, s.len());
     }
 }
 
-fn read_key() -> usize {
+pub fn read_key() -> usize {
     unsafe {
         syscall0(8)
     }
 }
 
-fn poll_xhci() {
+pub fn poll_xhci() {
     unsafe {
         syscall0(6);
     }
 }
 
-fn yield_task() {
+pub fn yield_task() {
     unsafe {
         syscall0(4);
     }
 }
 
-fn shutdown() -> ! {
+pub fn shutdown() -> ! {
     unsafe {
         syscall0(7);
     }
